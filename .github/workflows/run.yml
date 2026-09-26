@@ -1,0 +1,50 @@
+name: 家計簿サービス（全員分の定期実行）
+
+# ============================================================
+# 30分おきに、連携済みの利用者全員分の家計簿処理を行う（src/runner.py）。
+#
+# 【必須】GitHub Secrets（Settings → Secrets and variables → Actions → Secrets）
+#   RELAY_URL                  … 中継役（GAS）のウェブアプリのURL
+#   RUNNER_KEY                 … 中継役との合言葉（GASのスクリプトプロパティと同じ値）
+#   LINE_CHANNEL_ACCESS_TOKEN  … 日次決算Botのチャネルアクセストークン
+# 【任意】
+#   ANTHROPIC_API_KEY          … AIによるカテゴリ判定・振り返りコメント用
+#
+# このリポジトリは公開なので、実行ログも誰でも見られる。runner.py は、
+# 利用者ごとの処理の出力（金額・店舗名など）を表示せず、結果と、エラーの場所・種類だけを表示する。
+# ============================================================
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+# 前の実行が終わる前に次の実行が始まると、同じメールを二重に処理してしまうため、順番待ちさせる
+concurrency:
+  group: kakeibo-service
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v4
+
+      - name: Pythonをセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: 依存パッケージをインストール
+        run: pip install -r requirements.txt
+
+      - name: 全員分を処理
+        run: python -m src.runner
+        env:
+          RELAY_URL: ${{ secrets.RELAY_URL }}
+          RUNNER_KEY: ${{ secrets.RUNNER_KEY }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

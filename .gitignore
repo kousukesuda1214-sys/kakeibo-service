@@ -1,0 +1,14 @@
+# ===== 秘密情報（絶対にGitHubに上げない） =====
+gmail_token.json
+gmail_client_secret.json
+web_client_secret.json
+runner_key.txt
+.env
+
+# ===== Python・Macが自動で作るファイル =====
+__pycache__/
+*.pyc
+venv/
+.venv/
+.DS_Store
+*.log
