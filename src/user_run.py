@@ -27,7 +27,7 @@ import os  # noqa: E402
 from . import initial_setup, line_client, notify, sheets_client  # noqa: E402
 from . import main as kakeibo_main  # noqa: E402
 from .settings import ensure_settings_sheet  # noqa: E402
-from .sheet_style import apply_layout_if_outdated  # noqa: E402
+from .sheet_style import apply_layout_if_outdated, ensure_sheet_order  # noqa: E402
 
 DEFAULT_SHEET_TITLES = ("シート1", "Sheet1")
 
@@ -73,6 +73,7 @@ def run() -> None:
     # 見た目の反映に失敗しても、家計簿の記録そのものには影響しないので、止めずに報告だけする
     try:
         apply_layout_if_outdated()
+        ensure_sheet_order()
     except Exception as e:
         notify.notify_error("apply_layout", e)
 

@@ -14,6 +14,22 @@ from . import config, sheets_client
 
 LAYOUT_VERSION = 1
 
+# シート（タブ）の並び順。毎日見るものを左に、たまにしか触らない設定系を右にしている
+# （晃介さん専用版の並び順に、サービス版で増えた「カテゴリルール」「設定」を加えたもの）。
+# ここに無いシート（利用者が自分で作ったシートなど）は、この並びの後ろに、元の順番のまま置く。
+SHEET_ORDER = [
+    config.SHEET_BUDGET,
+    getattr(config, "SHEET_DAILY_USAGE", "日次利用額"),
+    config.SHEET_DETAIL,
+    config.SHEET_LOG,
+    getattr(config, "SHEET_ANNUAL_SUMMARY", "年間サマリー"),
+    config.SHEET_CATEGORY_BUDGET,
+    sheets_client.SHEET_CATEGORY_RULES,
+    "システム状態",
+    config.SHEET_SENDER_LIST,
+    "設定",
+]
+
 MIN_COLUMNS = 26          # シートの列数の最低ライン（少ないと、右側が灰色になって使いにくい）
 YEN = "#,##0"
 YEN_SIGNED = "#,##0;[Red]-#,##0"
@@ -159,6 +175,25 @@ def apply_layout() -> None:
             requests.extend(_requests_for(worksheets[title], layout))
     if requests:
         sheets_client._call_with_retry(ss.batch_update, {"requests": requests})
+
+
+def ensure_sheet_order() -> bool:
+    """シート（タブ）が SHEET_ORDER の順に並んでいなければ並べ替える。並べ替えたらTrue。
+    「年間サマリー」のように途中で増えるシートもあるため、毎回の実行の最後に呼ぶ。
+    並び順が合っていれば、読み取り1回だけで終わる。"""
+    ss = sheets_client._spreadsheet()
+    worksheets = sheets_client._call_with_retry(ss.worksheets)
+    rank = {title: i for i, title in enumerate(SHEET_ORDER)}
+    # 並び順に無いシートは後ろへ。同じ扱いのもの同士は、今の順番を保つ（sorted は安定ソート）
+    desired = sorted(worksheets, key=lambda ws: rank.get(ws.title, len(SHEET_ORDER)))
+    if [ws.id for ws in desired] == [ws.id for ws in worksheets]:
+        return False
+    requests = [
+        {"updateSheetProperties": {"properties": {"sheetId": ws.id, "index": index}, "fields": "index"}}
+        for index, ws in enumerate(desired)
+    ]
+    sheets_client._call_with_retry(ss.batch_update, {"requests": requests})
+    return True
 
 
 def apply_layout_if_outdated() -> bool:
