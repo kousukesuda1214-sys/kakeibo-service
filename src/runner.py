@@ -123,4 +123,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        # 例外の本文には、設定値（URLなど）が含まれることがあるため、種類だけを表示する
+        print(f"❌ 親玉の処理が止まりました：{type(e).__name__}")
+        sys.exit(1)

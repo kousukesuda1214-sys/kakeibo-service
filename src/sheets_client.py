@@ -38,6 +38,12 @@ from . import config
 from .gmail_client import get_credentials
 
 _gc = None
+_ss = None
+_ws_cache: dict = {}
+
+# Google Sheets APIの「1分あたりの回数制限」に当たったときの待ち時間。制限は1分ごとに回復する
+_QUOTA_WAIT_SECONDS = 65
+_QUOTA_MAX_ATTEMPTS = 6
 
 # 一時的なネットワークエラーとみなし、自動リトライの対象にする例外。
 # ・requests.exceptions.SSLError / ConnectionError / Timeout: Wi-Fi瞬断やVPNなどによる通信断
@@ -59,12 +65,22 @@ def _call_with_retry(func, *args, max_attempts: int = 4, **kwargs):
     最後の例外をそのまま呼び出し元に投げる（無限リトライにはしない）。
     """
     last_error = None
-    for attempt in range(1, max_attempts + 1):
+    attempt = 0
+    while True:
+        attempt += 1
         try:
             return func(*args, **kwargs)
         except _RETRYABLE_EXCEPTIONS as e:
             last_error = e
-            if attempt == max_attempts:
+            # 回数制限（429）は1分ごとに回復するので、1分待ってやり直す（通常のエラーより多めに粘る）
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status == 429:
+                if attempt >= _QUOTA_MAX_ATTEMPTS:
+                    break
+                print(f"⚠️ Google Sheets APIの回数制限に達しました。{_QUOTA_WAIT_SECONDS}秒待ってやり直します（{attempt}回目）")
+                time.sleep(_QUOTA_WAIT_SECONDS)
+                continue
+            if attempt >= max_attempts:
                 break
             wait_seconds = 2 ** attempt  # 2, 4, 8, 16秒...
             print(
@@ -83,7 +99,27 @@ def _client():
 
 
 def _spreadsheet():
-    return _call_with_retry(_client().open_by_key, config.GOOGLE_SHEET_ID)
+    """
+    家計簿のスプレッドシートを返す。
+
+    ■ サービス化での変更点
+    以前は呼ばれるたびに開き直し、シートを探すたびにも一覧を取り直していたため、1件の記録で
+    Google Sheets APIを何度も呼んでいた。1人で30分に数件なら問題なかったが、新しい利用者の
+    初回（1か月分をまとめて記録）で「1分あたりの回数制限」を超えてしまったため、
+    1回の実行の中では、開いたスプレッドシートと見つけたシートを覚えておいて使い回すようにした。
+    """
+    global _ss
+    if _ss is None:
+        _ss = _call_with_retry(_client().open_by_key, config.GOOGLE_SHEET_ID)
+        find_worksheet = _ss.worksheet
+
+        def cached_worksheet(title):
+            if title not in _ws_cache:
+                _ws_cache[title] = _call_with_retry(find_worksheet, title)
+            return _ws_cache[title]
+
+        _ss.worksheet = cached_worksheet
+    return _ss
 
 
 def _parse_yen(raw) -> int:
@@ -126,6 +162,35 @@ def append_transaction(effective_date: datetime, merchant: str, amount: int, cat
         [["", effective_date.strftime("%Y/%m/%d %H:%M:%S"), merchant, amount, category]],
         value_input_option="USER_ENTERED",
     )
+
+
+def add_many_to_log(date_totals: dict) -> None:
+    """「ログ」シートに、日付ごとの金額をまとめて加算する（add_to_log の一括版）。
+    シートを1回だけ読み、既存の日付の更新と新しい日付の追加を、それぞれ1回の書き込みで済ませる。"""
+    if not date_totals:
+        return
+    sheet = _spreadsheet().worksheet(config.SHEET_LOG)
+    records = _call_with_retry(sheet.get_all_values)
+    row_by_date = {row[1]: i + 1 for i, row in enumerate(records) if len(row) > 1 and row[1]}
+
+    updates = []
+    new_rows = []
+    for date_key, amount in date_totals.items():
+        if date_key in row_by_date:
+            row_number = row_by_date[date_key]
+            current = records[row_number - 1][2] if len(records[row_number - 1]) > 2 else "0"
+            updates.append({"range": f"C{row_number}", "values": [[_parse_yen(current) + amount]]})
+        else:
+            new_rows.append(["", date_key, amount])
+
+    if updates:
+        _call_with_retry(sheet.batch_update, updates, value_input_option="USER_ENTERED")
+    if new_rows:
+        start_row = len(records) + 1
+        end_row = start_row + len(new_rows) - 1
+        if sheet.row_count < end_row:
+            _call_with_retry(sheet.add_rows, end_row - sheet.row_count)
+        _call_with_retry(sheet.update, f"A{start_row}", new_rows, value_input_option="USER_ENTERED")
 
 
 def add_to_log(date_key: str, amount_to_add: int) -> None:

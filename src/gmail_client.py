@@ -274,6 +274,20 @@ def fetch_unprocessed_messages(service, sender_configs: list[dict] | None = None
             break
 
 
+def remove_processed_label(service, message_ids: list[str]) -> None:
+    """「処理済み」の目印を外す。記録の書き込みに失敗したメールを、次回の実行でやり直せるようにするため。"""
+    if not message_ids:
+        return
+    label_id = _get_or_create_label_id(service)
+    for start in range(0, len(message_ids), 1000):  # batchModify は1回1000件まで
+        _call_with_retry(
+            service.users().messages().batchModify(
+                userId="me",
+                body={"ids": message_ids[start:start + 1000], "removeLabelIds": [label_id]},
+            ).execute
+        )
+
+
 def fetch_unprocessed_payment_notice_messages(service) -> Iterator[dict]:
     """
     未処理の「お支払い日のご案内」メール（三井住友カード(Vpass)からの支払日確定通知）を

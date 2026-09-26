@@ -46,7 +46,7 @@ from . import (
     review_comment,
     unclassified_report,
 )
-from .gmail_client import get_gmail_service, fetch_unprocessed_messages
+from .gmail_client import get_gmail_service, fetch_unprocessed_messages, remove_processed_label
 from .settings import apply_sheet_settings
 
 # この時刻以降に受信した（本文に利用日時の記載が無い）通知は、翌日の取引として扱う。
@@ -97,12 +97,54 @@ def process_new_emails() -> int:
     付いていないので次回の実行で自然に拾われる。
     """
     service = get_gmail_service()
-    matched_count = 0
 
     # 「送信元リスト」シートを最優先で読む（GASのgetSenderConfigsに相当。
     # シートが無い・空ならconfig.SENDER_LISTにフォールバックする）
     sender_configs = sheets_client.get_sender_configs()
 
+    # 記録はためておき、BATCH_SIZE件ごとにまとめて書き込む（Google Sheets APIの回数制限対策）
+    pending_rows: list[tuple] = []
+    pending_ids: list[str] = []  # まだ書き込めていない記録のメールID（失敗時に目印を外すため）
+
+    def flush() -> None:
+        if not pending_rows:
+            return
+        date_totals: dict[str, int] = {}
+        for effective_date, _merchant, amount, _category in pending_rows:
+            key = effective_date.strftime("%Y/%m/%d")
+            date_totals[key] = date_totals.get(key, 0) + amount
+        sheets_client.bulk_append_transactions(list(pending_rows))
+        sheets_client.add_many_to_log(date_totals)
+        pending_rows.clear()
+        pending_ids.clear()
+
+    matched_count = 0
+    try:
+        matched_count = _process_messages(service, sender_configs, pending_rows, pending_ids, flush)
+    finally:
+        try:
+            flush()
+        except Exception as e:
+            print(f"記録の書き込みに失敗しました: {e}")
+            notify.notify_error("process_new_emails（記録の書き込み）", e)
+            # 書き込めなかったメールは「処理済み」の目印を外し、次回の実行でやり直す
+            # （目印だけ付いて記録されない、という取りこぼしを防ぐ）
+            try:
+                remove_processed_label(service, list(pending_ids))
+                print(f"書き込めなかった{len(pending_ids)}件は、次回の実行でやり直します")
+            except Exception as label_error:
+                notify.notify_error("process_new_emails（処理済みの目印を外す）", label_error)
+
+    return matched_count
+
+
+BATCH_SIZE = 20
+
+
+def _process_messages(service, sender_configs, pending_rows, pending_ids, flush) -> int:
+    """メールを1件ずつ読み、記録を pending_rows にためる（BATCH_SIZE件たまるごとに flush で書き込む）。
+    金額を読み取れたメールの件数を返す。"""
+    matched_count = 0
     message_iter = fetch_unprocessed_messages(service, sender_configs)
     while True:
         try:
@@ -140,8 +182,10 @@ def process_new_emails() -> int:
             raw_date = datetime.fromtimestamp(msg["date_ms"] / 1000)
             effective_date = get_effective_date(raw_date, msg["body"])
 
-            sheets_client.append_transaction(effective_date, merchant, amount, category)
-            sheets_client.add_to_log(effective_date.strftime("%Y/%m/%d"), amount)
+            pending_rows.append((effective_date, merchant, amount, category))
+            pending_ids.append(msg["id"])
+            if len(pending_rows) >= BATCH_SIZE:
+                flush()  # 失敗した場合は pending_rows を残したまま次へ進み、最後にもう一度まとめて試す
 
             print(f"記録: {effective_date:%Y/%m/%d %H:%M} {merchant} ¥{amount:,} [{category}]")
 
