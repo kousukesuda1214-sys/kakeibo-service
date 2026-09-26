@@ -359,12 +359,20 @@ def _recalculate_budget_cumulative(sheet) -> None:
         return
     first_row = first_index + 1
 
+    c_cum = 0
     e_cum = 0
     h_cum = 0
+    d_updates = []
     f_updates = []
     h_updates = []
     for i in range(first_index, last_row):
         row = values[i]
+        c_raw = row[2] if len(row) > 2 else ""   # C列（計画・月）
+        if c_raw not in ("", None):
+            c_cum += _parse_yen(c_raw)
+            d_updates.append(c_cum)
+        else:
+            d_updates.append("")
         e_raw = row[4] if len(row) > 4 else ""   # E列
         g_raw = row[6] if len(row) > 6 else ""   # G列
         if e_raw not in ("", None):
@@ -380,6 +388,7 @@ def _recalculate_budget_cumulative(sheet) -> None:
     # 引っかかりやすいため、F列・H列それぞれ1回の呼び出しでまとめて書き込む
     if f_updates:
         end_row = first_row + len(f_updates) - 1
+        _call_with_retry(sheet.update, f"D{first_row}:D{end_row}", [[v] for v in d_updates])  # D列（計画の累計）
         _call_with_retry(sheet.update, f"F{first_row}:F{end_row}", [[v] for v in f_updates])  # F列
         _call_with_retry(sheet.update, f"H{first_row}:H{end_row}", [[v] for v in h_updates])  # H列
 
@@ -557,9 +566,12 @@ def rebuild_daily_usage_sheet() -> None:
         sheet = ss.worksheet(config.SHEET_DAILY_USAGE)
     except Exception:
         sheet = _call_with_retry(
-            ss.add_worksheet, title=config.SHEET_DAILY_USAGE, rows=max(len(new_rows) + 10, 100), cols=7
+            ss.add_worksheet, title=config.SHEET_DAILY_USAGE, rows=max(len(new_rows) + 10, 100), cols=26
         )
 
+    # 取引が増えて行数が足りなくなっていたら、書き込む前に増やす（足りないと「範囲外」エラーになる）
+    if sheet.row_count < len(new_rows):
+        _call_with_retry(sheet.add_rows, len(new_rows) - sheet.row_count + 50)
     _call_with_retry(sheet.clear)
     _call_with_retry(sheet.update, "A1", new_rows, value_input_option="USER_ENTERED")
 
@@ -1278,6 +1290,7 @@ _STATE_CELLS = {
     "unclassified_report": "B7",
     "near_duplicate_warned": "B8",
     "error_notified": "B9",
+    "layout_version": "B10",  # 家計簿の見た目（sheet_style.py）の、反映済みの版数
 }
 
 

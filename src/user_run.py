@@ -27,6 +27,7 @@ import os  # noqa: E402
 from . import initial_setup, line_client, notify, sheets_client  # noqa: E402
 from . import main as kakeibo_main  # noqa: E402
 from .settings import ensure_settings_sheet  # noqa: E402
+from .sheet_style import apply_layout_if_outdated  # noqa: E402
 
 DEFAULT_SHEET_TITLES = ("シート1", "Sheet1")
 
@@ -66,6 +67,14 @@ def run() -> None:
     if os.environ.get("SHEET_READY") != "1":
         setup_sheet()
     kakeibo_main.run()
+
+    # 見た目（列の幅・3桁区切りなど）が最新の版でなければ反映する。
+    # 「日次利用額」などは kakeibo_main.run() の中で作られるので、最後に行う。
+    # 見た目の反映に失敗しても、家計簿の記録そのものには影響しないので、止めずに報告だけする
+    try:
+        apply_layout_if_outdated()
+    except Exception as e:
+        notify.notify_error("apply_layout", e)
 
 
 if __name__ == "__main__":

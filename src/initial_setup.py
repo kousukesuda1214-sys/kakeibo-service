@@ -80,7 +80,7 @@ def _apply_borders(sheet, start_row, end_row, start_col, end_col):
 
 def setup_detail_sheet(ss):
     """「取引明細」：A列は空け、B2:E2にヘッダーを入れる。"""
-    sheet, created = _ensure_sheet(ss, config.SHEET_DETAIL, rows=1000, cols=5)
+    sheet, created = _ensure_sheet(ss, config.SHEET_DETAIL, rows=1000, cols=26)
     if created:
         sheet.update("B2:E2", [["日時", "店舗名", "金額", "カテゴリ"]], value_input_option="USER_ENTERED")
         sheet.format("B2:E2", {"textFormat": {"bold": True}})
@@ -89,7 +89,7 @@ def setup_detail_sheet(ss):
 
 def setup_log_sheet(ss):
     """「ログ」：A列は空け、B2:C2にヘッダーを入れる。"""
-    sheet, created = _ensure_sheet(ss, config.SHEET_LOG, rows=1000, cols=3)
+    sheet, created = _ensure_sheet(ss, config.SHEET_LOG, rows=1000, cols=26)
     if created:
         sheet.update("B2:C2", [["日時", "金額"]], value_input_option="USER_ENTERED")
         sheet.format("B2:C2", {"textFormat": {"bold": True}})
@@ -100,25 +100,31 @@ def setup_budget_sheet(ss):
     """「予算計画」：B2:I2にヘッダーを入れ、今月の行を1行追加しておく。
     （年月は「引落し月」の意味。必要な月の行は、自動実行のときに、この行の予算額を
     コピーして自動で追加されるので、今月の行が実際の引落し月と違っていても問題ない）"""
-    sheet, created = _ensure_sheet(ss, config.SHEET_BUDGET, rows=100, cols=9)
+    sheet, created = _ensure_sheet(ss, config.SHEET_BUDGET, rows=100, cols=26)
     if created:
-        headers = ["年月", "計画", "", "実績(月)", "実績(累計)", "差額(月)", "差額(累計)", "確定実績(締め)"]
-        sheet.update("B2:I2", [headers], value_input_option="USER_ENTERED")
-        sheet.format("B2:I2", {"textFormat": {"bold": True}})
+        # 晃介さん専用版（GAS時代から使っている形）と同じ、2段の見出しにする
+        #   B列：年月（引落し月） C・D列：計画（月・累計） E・F列：実績（月・累計）
+        #   G・H列：差額（月・累計） I列：引落し確定額
+        sheet.update("B2:I3", [
+            ["", "計画", "", "実績", "", "差額", "", "引落し確定額"],
+            ["年月", "月", "累計", "月", "累計", "月", "累計", ""],
+        ], value_input_option="USER_ENTERED")
 
         from datetime import datetime
         today = datetime.now()
         month_label = f"{today.year}年{today.month}月"
-        sheet.update("B3:C3", [[month_label, config.SAMPLE_BUDGET_AMOUNT]], value_input_option="USER_ENTERED")
+        sheet.update("B4:D4", [[month_label, config.SAMPLE_BUDGET_AMOUNT, config.SAMPLE_BUDGET_AMOUNT]],
+                     value_input_option="USER_ENTERED")
         print(f"   → 今月（{month_label}）の行を、仮の予算額（{config.SAMPLE_BUDGET_AMOUNT:,}円）で追加しました。"
               f"実際の金額に書き換えてください。")
 
-        _apply_borders(sheet, start_row=2, end_row=3, start_col=2, end_col=9)
+        _apply_borders(sheet, start_row=2, end_row=4, start_col=2, end_col=9)
 
 
 def setup_sender_list_sheet(ss):
     """「送信元リスト」：カード会社ごとの設定を入れる。config.SENDER_LISTの内容を初期値として書き込む。"""
-    sheet, created = _ensure_sheet(ss, config.SHEET_SENDER_LIST, rows=20, cols=5)
+    # F列にサンプル行の説明を書くので、6列ぶん用意する（5列だとF列が範囲外になり、書き込みに失敗する）
+    sheet, created = _ensure_sheet(ss, config.SHEET_SENDER_LIST, rows=50, cols=26)
     if created:
         headers = ["サービス名", "送信元メールアドレス", "除外キーワード（件名、カンマ区切り・任意）", "金額の目印文言（任意）"]
         sheet.update("B2:E2", [headers], value_input_option="USER_ENTERED")
