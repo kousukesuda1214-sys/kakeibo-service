@@ -22,12 +22,15 @@ from . import config, gmail_client
 gmail_client.PROCESSED_LABEL_NAME = "家計簿サービス_処理済み"
 config.PAYMENT_NOTICE_PROCESSED_LABEL = "家計簿サービス_支払日通知_処理済み"
 
+import base64  # noqa: E402
+import json  # noqa: E402
 import os  # noqa: E402
 
 from . import initial_setup, line_client, notify, sheets_client  # noqa: E402
 from . import main as kakeibo_main  # noqa: E402
 from .settings import ensure_settings_sheet  # noqa: E402
 from .sheet_style import apply_layout_if_outdated, ensure_sheet_order  # noqa: E402
+from . import snapshot  # noqa: E402
 
 DEFAULT_SHEET_TITLES = ("シート1", "Sheet1")
 
@@ -76,6 +79,14 @@ def run() -> None:
         ensure_sheet_order()
     except Exception as e:
         notify.notify_error("apply_layout", e)
+
+    # LINEのメニュー（「今日の決算」など）で見るための最新の数字を作り、runner.py に渡す。
+    # 実行ログには出さない（runner.py がこの行を受け取って中継役に預け、表示はしない）
+    try:
+        data = json.dumps(snapshot.build(), ensure_ascii=False).encode("utf-8")
+        print("KAKEIBO_SNAPSHOT|" + base64.b64encode(data).decode("ascii"))
+    except Exception as e:
+        notify.notify_error("snapshot", e)
 
 
 if __name__ == "__main__":

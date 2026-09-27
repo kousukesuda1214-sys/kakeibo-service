@@ -19,6 +19,7 @@
   ANTHROPIC_API_KEY          … AIによるカテゴリ判定・振り返りコメント用（任意）
 """
 
+import base64
 import json
 import os
 import subprocess
@@ -84,6 +85,15 @@ def run_user(label: str, user: dict) -> bool:
             print(f"{label}：🆕 家計簿の準備が完了しました")
         except Exception as e:
             print(f"{label}：⚠️ 準備完了を中継役に伝えられませんでした（{type(e).__name__}）")
+
+    # LINEのメニューで見るための最新の数字を、中継役に預ける（中身はログに出さない）
+    snapshots = [l.split("|", 1)[1] for l in lines if l.startswith("KAKEIBO_SNAPSHOT|")]
+    if snapshots:
+        try:
+            data = json.loads(base64.b64decode(snapshots[-1]).decode("utf-8"))
+            relay("save_snapshot", user_id=user["user_id"], snapshot=data)
+        except Exception as e:
+            print(f"{label}：⚠️ 最新の数字を中継役に預けられませんでした（{type(e).__name__}）")
 
     errors = [l.split("|") for l in lines if l.startswith("KAKEIBO_ERROR|")]
     traces = [l.split("|", 1)[1] for l in lines if l.startswith("KAKEIBO_TRACE|")]
