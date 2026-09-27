@@ -118,6 +118,9 @@ def run_user(label: str, user: dict) -> bool:
 
 def main() -> None:
     users = relay("list_users")["users"]
+    # 連携したばかり（家計簿の準備がまだ）の人を先に処理する。
+    # 連携した直後に中継役がこの実行を呼び出したとき、その人が待たされないようにするため
+    users.sort(key=lambda u: bool(u.get("sheet_ready")))
     print(f"連携済みの利用者：{len(users)}人")
 
     failures = 0
