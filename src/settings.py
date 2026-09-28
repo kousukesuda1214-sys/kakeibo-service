@@ -42,8 +42,8 @@ SETTINGS = [
      "締め日の翌月の何日に引き落とされるか（1〜31の数字）"),
     ("DAILY_REPORT_HOUR", "日次決算を送る時刻", "hour",
      "0〜23の数字。19 なら19時台に届く（最大30分ほど遅れることがある）"),
-    ("DAILY_REPORT_WEEKDAYS", "日次決算を送る曜日", "weekdays",
-     "「毎日」「平日」「月・水・金」のように選べる。「送らない」も可"),
+    ("DAILY_REPORT_WEEKDAYS", "日次決算を送る曜日", "weekdays_required",
+     "週1〜7回、好きな曜日を選べる。「日」「月・木」「月・水・金」「平日」「毎日」など"),
     ("WEEKLY_REPORT_WEEKDAY", "週次決算を送る曜日", "weekdays",
      "「日」のように1つ、または「月・木」のように複数選べる。「毎日」「平日」「週末」「送らない」も可"),
     ("HIGH_AMOUNT_THRESHOLD", "高額利用アラートの金額", "yen",
@@ -100,6 +100,13 @@ def _parse(kind: str, raw: str):
             raise ValueError(f"{low}〜{high}の数字で書いてください")
         return value
 
+    if kind == "weekdays_required":
+        # 日次決算用：週1回以上（「送らない」は選べない）
+        days = _parse("weekdays", raw)
+        if not days:
+            raise ValueError("日次決算は週1回以上にしてください")
+        return days
+
     if kind == "weekdays":
         # 「日」「月・木」「月 水 金」「毎日」「送らない」などを、曜日の番号のリスト（1=月〜7=日）にする
         if normalized in ("毎日", "毎日送る"):
@@ -142,7 +149,7 @@ def _parse(kind: str, raw: str):
 
 def _display(kind: str, value) -> str:
     """configの値を、シートに書く文字に変換する（シートを新しく作るとき用）。"""
-    if kind == "weekdays":
+    if kind in ("weekdays", "weekdays_required"):
         days = value if isinstance(value, (list, tuple)) else [value]
         try:
             days = sorted({int(d) for d in days})
