@@ -7,6 +7,8 @@
   import互換のため、このファイルからも引き続き使える。
 - 送信時間帯の終わり（旧：21時固定）を DAILY_REPORT_HOUR から2時間以内に変更。
 - 前回サイクル同時点比の計算で、月末締めなどのときに日付計算が失敗する問題を回避。
+- 送る曜日を選べるようにした（「設定」シートの「日次決算を送る曜日」）。毎日送らない設定のときは、
+  前回の決算から2日以上空いた日に「前回からの利用」の行を足し、間の日の利用も分かるようにした。
 """
 
 from datetime import datetime, timedelta
@@ -31,8 +33,26 @@ def _to_int(value) -> int:
         return 0
 
 
-def _already_sent_today(today: datetime) -> bool:
-    return sheets_client.get_last_daily_report_date() == today.strftime("%Y/%m/%d")
+def _weekdays() -> list[int]:
+    """日次決算を送る曜日（1=月〜7=日）。"""
+    value = getattr(config, "DAILY_REPORT_WEEKDAYS", [1, 2, 3, 4, 5, 6, 7])
+    days = value if isinstance(value, (list, tuple)) else [value]
+    return sorted({int(d) for d in days if str(d).isdigit() and 1 <= int(d) <= 7})
+
+
+def _since_previous_line(records, today: datetime, previous: str | None) -> str:
+    """前回の決算から2日以上空いていれば、「前回からの利用」の行を返す（空いていなければ空文字）。"""
+    previous_date = _parse_date(previous) if previous else None
+    if not previous_date or (today.date() - previous_date.date()).days < 2:
+        return ""
+    total = 0
+    for row in records:
+        if len(row) < 3:
+            continue
+        row_date = _parse_date(row[1])
+        if row_date and previous_date.date() < row_date.date() <= today.date():
+            total += _to_int(row[2])
+    return f"🧾 前回（{previous_date.month}/{previous_date.day}）からの利用：{total:,}円\n"
 
 
 def _mark_sent(today: datetime) -> None:
@@ -55,7 +75,8 @@ def _get_previous_period_to_date_total(records, period: dict) -> int:
     return total
 
 
-def build_report(today: datetime):
+def build_report(today: datetime, previous: str | None = None):
+    """previous：前回の日次決算を送った日（yyyy/mm/dd）。毎日送らない設定のときの「前回からの利用」に使う。"""
     period = get_current_closing_period_info(today)
 
     budget_info = sheets_client.get_monthly_budget(period["payment_month_date"])
@@ -141,6 +162,7 @@ def build_report(today: datetime):
         f"期間：{period['period_start'].month}/{period['period_start'].day}〜"
         f"（{period['closing_date'].month}/{period['closing_date'].day}締め）\n\n"
         f"💳 本日：{today_spend:,}円\n"
+        f"{_since_previous_line(records, today, previous)}"
         f"📅 累計：{period_total:,}円　／　予算：{period_budget:,}円\n"
         f"🎯 今日までの目安：{budget_to_date:,}円\n"
         f"{pace_line}"
@@ -155,12 +177,15 @@ def build_report(today: datetime):
 def maybe_send_daily_report(now: datetime | None = None) -> bool:
     """送信時間帯に、その日まだ送っていなければ日次決算をLINEに送る。"""
     now = now or datetime.now()
+    if now.isoweekday() not in _weekdays():
+        return False
     if not in_report_window(now):
         return False
-    if _already_sent_today(now):
+    previous = sheets_client.get_last_daily_report_date()
+    if previous == now.strftime("%Y/%m/%d"):
         return False
 
-    message = build_report(now)
+    message = build_report(now, previous)
     line_client.send_line_message(message)
     _mark_sent(now)
     print("日次決算を送信しました")

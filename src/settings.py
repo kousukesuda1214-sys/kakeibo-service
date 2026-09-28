@@ -42,8 +42,10 @@ SETTINGS = [
      "締め日の翌月の何日に引き落とされるか（1〜31の数字）"),
     ("DAILY_REPORT_HOUR", "日次決算を送る時刻", "hour",
      "0〜23の数字。19 なら19時台に届く（最大30分ほど遅れることがある）"),
-    ("WEEKLY_REPORT_WEEKDAY", "週次決算を送る曜日", "weekday",
-     "月・火・水・木・金・土・日 のどれか"),
+    ("DAILY_REPORT_WEEKDAYS", "日次決算を送る曜日", "weekdays",
+     "「毎日」「平日」「月・水・金」のように選べる。「送らない」も可"),
+    ("WEEKLY_REPORT_WEEKDAY", "週次決算を送る曜日", "weekdays",
+     "「日」のように1つ、または「月・木」のように複数選べる。「毎日」「平日」「週末」「送らない」も可"),
     ("HIGH_AMOUNT_THRESHOLD", "高額利用アラートの金額", "yen",
      "この金額以上の利用があると、すぐにLINEでお知らせ"),
     ("SAMPLE_BUDGET_AMOUNT", "仮の予算", "yen",
@@ -54,6 +56,16 @@ SETTINGS = [
      "使う／使わない。三井住友カード以外の人は「使わない」にする"),
 ]
 
+
+# config.py に無い（サービス版で増えた）設定項目の初期値
+_DEFAULTS = {
+    "DAILY_REPORT_WEEKDAYS": [1, 2, 3, 4, 5, 6, 7],  # 日次決算は毎日
+}
+for _attr, _default in _DEFAULTS.items():
+    if not hasattr(config, _attr):
+        setattr(config, _attr, list(_default))
+
+_WEEKDAY_GROUPS = {"平日": [1, 2, 3, 4, 5], "週末": [6, 7], "土日": [6, 7]}
 
 # ============================================================
 # 値の変換（シートの文字 ⇔ configの値）
@@ -88,13 +100,28 @@ def _parse(kind: str, raw: str):
             raise ValueError(f"{low}〜{high}の数字で書いてください")
         return value
 
-    if kind == "weekday":
-        if normalized.isdigit() and 1 <= int(normalized) <= 7:
-            return int(normalized)
-        head = normalized[:1]
-        if head in _WEEKDAYS:
-            return _WEEKDAYS.index(head) + 1  # 1=月〜7=日
-        raise ValueError("月〜日のどれかで書いてください")
+    if kind == "weekdays":
+        # 「日」「月・木」「月 水 金」「毎日」「送らない」などを、曜日の番号のリスト（1=月〜7=日）にする
+        if normalized in ("毎日", "毎日送る"):
+            return [1, 2, 3, 4, 5, 6, 7]
+        if normalized in ("送らない", "なし", "無し", "しない", "オフ", "off", "OFF"):
+            return []
+        days = set()
+        for token in re.split(r"[・、,，/／\s　と]+", normalized):
+            token = token.strip()
+            if not token:
+                continue
+            if token in _WEEKDAY_GROUPS:
+                days.update(_WEEKDAY_GROUPS[token])  # 「平日」「週末」「土日」
+            elif token.isdigit() and 1 <= int(token) <= 7:
+                days.add(int(token))
+            elif token[:1] in _WEEKDAYS:
+                days.add(_WEEKDAYS.index(token[:1]) + 1)  # 「木曜」「木曜日」も「木」として読む
+            else:
+                raise ValueError("曜日は「月・木」「平日」のように書いてください")
+        if not days:
+            raise ValueError("曜日を書いてください")
+        return sorted(days)
 
     if kind == "yen":
         digits = re.sub(r"[,，円¥￥\s]", "", normalized)
@@ -115,11 +142,21 @@ def _parse(kind: str, raw: str):
 
 def _display(kind: str, value) -> str:
     """configの値を、シートに書く文字に変換する（シートを新しく作るとき用）。"""
-    if kind == "weekday":
+    if kind == "weekdays":
+        days = value if isinstance(value, (list, tuple)) else [value]
         try:
-            return _WEEKDAYS[int(value) - 1]
-        except (ValueError, IndexError):
+            days = sorted({int(d) for d in days})
+        except (TypeError, ValueError):
             return "日"
+        if not days:
+            return "送らない"
+        if len(days) == 7:
+            return "毎日"
+        if days == [1, 2, 3, 4, 5]:
+            return "平日"
+        if days == [6, 7]:
+            return "週末"
+        return "・".join(_WEEKDAYS[d - 1] for d in days if 1 <= d <= 7)
     if kind == "bool":
         if isinstance(value, str):
             value = value.strip().lower() not in ("false", "0", "no", "off", "")
@@ -130,7 +167,7 @@ def _display(kind: str, value) -> str:
 def _current_value(attr: str):
     if attr == "TZ":
         return os.environ.get("TZ") or "Asia/Tokyo"
-    return getattr(config, attr, "")
+    return getattr(config, attr, _DEFAULTS.get(attr, ""))
 
 
 # ============================================================
@@ -154,20 +191,47 @@ def ensure_settings_sheet():
 
     values = sheets_client._call_with_retry(sheet.get_all_values)
     existing = {str(row[1]).strip() for row in values[2:] if len(row) > 1}
-    missing = [
-        [label, _display(kind, _current_value(attr)), description, ""]
-        for attr, label, kind, description in SETTINGS
-        if label not in existing
+
+    # 雛形の更新で説明文が変わった項目は、D列を新しい説明に書き換える（C列の値には触らない）
+    descriptions = {label: description for _, label, _, description in SETTINGS}
+    stale = [
+        {"range": f"D{index + 1}", "values": [[descriptions[str(row[1]).strip()]]]}
+        for index, row in enumerate(values)
+        if index >= 2 and len(row) > 1 and str(row[1]).strip() in descriptions
+        and (row[3] if len(row) > 3 else "") != descriptions[str(row[1]).strip()]
     ]
-    if missing:
-        start_row = max(len(values), 2) + 1
-        end_row = start_row + len(missing) - 1
+    if stale:
+        sheets_client._call_with_retry(sheet.batch_update, stale)
+    # 足りない項目（雛形の更新で増えた項目）を、SETTINGS の並び順どおりの位置に差し込む。
+    # 例：「日次決算を送る曜日」は「日次決算を送る時刻」のすぐ下に入る。
+    # 上の行の書式（入力欄の緑色・枠線）を引き継ぐので、見た目も揃う。
+    row_of = {str(row[1]).strip(): index + 1 for index, row in enumerate(values) if index >= 2 and len(row) > 1 and str(row[1]).strip()}
+
+    if not row_of:
+        # 新しく作ったばかりのシート：全部の行をまとめて書き込み、枠線を引く
+        rows = [["", label, _display(kind, _current_value(attr)), description, ""] for attr, label, kind, description in SETTINGS]
+        end_row = 2 + len(rows)
         if sheet.row_count < end_row:
             sheets_client._call_with_retry(sheet.add_rows, end_row - sheet.row_count)
-        sheets_client._call_with_retry(
-            sheet.update, f"B{start_row}:E{end_row}", missing, value_input_option="RAW"
-        )
+        sheets_client._call_with_retry(sheet.update, f"A3:E{end_row}", rows, value_input_option="RAW")
         sheets_client._apply_borders(sheet, start_row=2, end_row=end_row, start_col=2, end_col=5)
+        return sheet
+
+    previous_row = 2  # 見出しの行
+    for attr, label, kind, description in SETTINGS:
+        if label in row_of:
+            previous_row = row_of[label]
+            continue
+        insert_at = previous_row + 1
+        sheets_client._call_with_retry(
+            sheet.insert_row,
+            ["", label, _display(kind, _current_value(attr)), description, ""],
+            index=insert_at, value_input_option="RAW", inherit_from_before=True,
+        )
+        # 差し込んだ行より下の行番号は1つずつずれる
+        row_of = {k: (v + 1 if v >= insert_at else v) for k, v in row_of.items()}
+        row_of[label] = insert_at
+        previous_row = insert_at
     return sheet
 
 

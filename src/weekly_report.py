@@ -1,7 +1,12 @@
 """
 週次決算：直近7日分の取引明細をカテゴリ別に集計し、平日・休日の内訳、
 カテゴリ別予算オーバーの警告とあわせてLINEに送る。GAS版のsendWeeklyReport()を移植。
-送る曜日は WEEKLY_REPORT_WEEKDAY（1=月〜7=日）で指定する。
+送る曜日は WEEKLY_REPORT_WEEKDAY で指定する（1=月〜7=日。「設定」シートで「月・木」のように
+複数選ぶと、そのリストになる）。
+
+■ サービス化での変更点
+週に複数回送れるようにした。集計する期間は「前回送る曜日の翌日〜今回」に自動で合わせるので、
+同じ取引が2回の決算に重複して入ることはない（週1回なら、今までどおり直近7日になる）。
 """
 
 from datetime import datetime, timedelta
@@ -47,8 +52,25 @@ def _build_category_budget_section(today: datetime) -> str:
     return "\n".join(lines)
 
 
+def _weekdays() -> list[int]:
+    """送る曜日のリスト（1=月〜7=日）。設定が数字1つの場合（旧形式）にも対応する。"""
+    value = config.WEEKLY_REPORT_WEEKDAY
+    days = value if isinstance(value, (list, tuple)) else [value]
+    return sorted({int(d) for d in days if str(d).isdigit() and 1 <= int(d) <= 7})
+
+
+def _days_since_previous(today: datetime) -> int:
+    """今日から見て、1つ前の「送る曜日」が何日前か（週1回なら7、「月・木」の木曜なら3）。"""
+    weekday = today.isoweekday()
+    gaps = [((weekday - d) % 7) or 7 for d in _weekdays()]
+    return min(gaps) if gaps else 7
+
+
 def build_report(today: datetime) -> str:
-    seven_days_ago = today - timedelta(days=7)
+    # 集計は「前回の送信時刻の直後〜今」。前回の送信日は、ほぼ前回の決算に含まれているので、
+    # 表示上の期間は「前回の翌日〜今日」にする（同じ日付が2つの決算に出て紛らわしくならないように）
+    seven_days_ago = today - timedelta(days=_days_since_previous(today))
+    label_start = seven_days_ago + timedelta(days=1)
 
     category_totals: dict[str, int] = {}
     week_total = 0
@@ -57,7 +79,7 @@ def build_report(today: datetime) -> str:
     weekend_total = 0
 
     for r in sheets_client.get_parsed_detail_rows():
-        if not (seven_days_ago <= r["date"] <= today):
+        if not (seven_days_ago < r["date"] <= today):
             continue
         category_totals[r["category"]] = category_totals.get(r["category"], 0) + r["amount"]
         week_total += r["amount"]
@@ -70,7 +92,7 @@ def build_report(today: datetime) -> str:
     sorted_categories = sorted(category_totals.items(), key=lambda kv: kv[1], reverse=True)
 
     message = (
-        f"📊 週次決算（{seven_days_ago.month}月{seven_days_ago.day}日〜{today.month}月{today.day}日）\n"
+        f"📊 週次決算（{label_start.month}月{label_start.day}日〜{today.month}月{today.day}日）\n"
         f"合計利用額：{week_total:,}円（{transaction_count}件）\n\n"
         "【カテゴリ別内訳】\n"
     )
@@ -102,7 +124,7 @@ def maybe_send_weekly_report(now: datetime | None = None) -> bool:
     """指定した曜日の送信時間帯に、その日まだ送っていなければ週次決算をLINEに送る。"""
     now = now or datetime.now()
 
-    if now.isoweekday() != config.WEEKLY_REPORT_WEEKDAY:
+    if now.isoweekday() not in _weekdays():
         return False
     if not in_report_window(now):
         return False
