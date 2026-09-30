@@ -201,6 +201,10 @@ def _build_query(sender_configs: list[dict] | None = None) -> str:
     parts = []
     for sender in configs:
         part = f'from:({sender["address"]})'
+        includes = sender.get("include_subject_keywords") or []
+        if includes:
+            # 件名に、どれか1つの言葉を含むものだけ（宣伝メールなどを読まないように）
+            part += " (" + " OR ".join(f'subject:"{kw}"' for kw in includes) + ")"
         excludes = sender.get("exclude_subject_keywords") or []
         if excludes:
             exclude_str = " ".join(f'-subject:({kw})' for kw in excludes)
@@ -210,16 +214,40 @@ def _build_query(sender_configs: list[dict] | None = None) -> str:
     return f"({sender_query}) -label:{PROCESSED_LABEL_NAME}{_process_after_filter()}"
 
 
+def _html_to_text(html: str) -> str:
+    """HTMLのメールを、読み取り用の文字に変換する（表のマス・段落・改行ごとに改行を入れる）。
+    GAS版の getPlainBody() が自動でしていた変換を、Python版でも行うためのもの。"""
+    import html as html_lib
+    import re as re_lib
+    text = re_lib.sub(r"(?is)<(script|style|head)[^>]*>.*?</\1>", " ", html)
+    text = re_lib.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re_lib.sub(r"(?i)</(p|div|tr|td|th|li|h[1-6]|table)>", "\n", text)
+    text = re_lib.sub(r"<[^>]+>", " ", text)
+    text = html_lib.unescape(text).replace("\u00a0", " ")
+    lines = [re_lib.sub(r"[ \t\u3000]+", " ", line).strip() for line in text.split("\n")]
+    return "\n".join(line for line in lines if line)
+
+
 def _get_plain_body(payload: dict) -> str:
-    """メッセージのペイロードからプレーンテキスト本文を取り出す（再帰的にパートを探索）。
+    """文字だけの部分（text/plain）を優先して本文を取り出す。無ければ、HTMLの部分を文字に変換して使う
+    （楽天カードの通知のように、HTMLだけで作られているメールがあるため）。"""
+    text = _find_part(payload, "text/plain")
+    if text:
+        return text
+    html = _find_part(payload, "text/html")
+    return _html_to_text(html) if html else ""
+
+
+def _find_part(payload: dict, mime_type: str) -> str:
+    """指定した種類（text/plain・text/html）の部分を、パートを再帰的にたどって取り出す。
     Gmail APIはformat=full取得時に本文を自動的にUTF-8へ変換して返すため、UTF-8で
     デコードする（元のメールの実際の文字コードがISO-2022-JP等であっても、Gmail側で
     すでに変換済みのため、こちらで別の文字コードとして扱う必要はない）。"""
-    if payload.get("mimeType") == "text/plain" and "data" in payload.get("body", {}):
+    if payload.get("mimeType") == mime_type and "data" in payload.get("body", {}):
         return base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
 
     for part in payload.get("parts", []):
-        result = _get_plain_body(part)
+        result = _find_part(part, mime_type)
         if result:
             return result
     return ""

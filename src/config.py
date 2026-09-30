@@ -85,17 +85,28 @@ PAYMENT_NOTICE_PROCESSED_LABEL = "支払日通知_処理済み"
 # ============================================================
 SENDER_LIST = [
     {
+        "name": "三井住友カード(Vpass)",
         "address": "statement@vpass.ne.jp",
         "exclude_subject_keywords": ["ご利用確認のお願い"],
         "amount_keyword": None,
     },
     {
+        "name": "Google Play",
         "address": "googleplay-noreply@google.com",
         "exclude_subject_keywords": [
             "定期購入は解約されます", "の試用は", "一時停止", "セキュリティ通信",
             "Play Points", "プロフィール", "プライバシー設定", "値上げ", "利用規約",
             "カスタマイズ", "認証", "フィッシング", "Face ID", "指紋認証",
         ],
+        "amount_keyword": None,
+    },
+    {
+        # 楽天カードは同じアドレスから宣伝メールも届くので、件名で「利用のお知らせ」だけに絞る
+        # （「【速報版】カード利用のお知らせ」と、後日届く店名入りの「カード利用のお知らせ」の両方）
+        "name": "楽天カード",
+        "address": "info@mail.rakuten-card.co.jp",
+        "include_subject_keywords": ["カード利用のお知らせ"],
+        "exclude_subject_keywords": [],
         "amount_keyword": None,
     },
 ]
@@ -108,6 +119,9 @@ AMOUNT_PATTERNS = [
     r"利用金額[：:\s]*([\d,]+)\s*円",
     r"お支払い?金額[：:\s]*([\d,]+)\s*円",
     r"合計[：:\s]*[¥￥]\s*([\d,]+)",
+    # 「ご利用日｜ご利用金額」のように、見出しと値が表で横に並んでいるメール（楽天カードの速報版など）。
+    # 見出しの少し後ろにある「◯◯円」を拾う（上の書き方で見つからなかったときの最後の手段）
+    r"ご利用金額[\s\S]{0,80}?([\d,]+)\s*円",
 ]
 
 # ============================================================

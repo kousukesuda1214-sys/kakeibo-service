@@ -126,35 +126,25 @@ def setup_sender_list_sheet(ss):
     # F列にサンプル行の説明を書くので、6列ぶん用意する（5列だとF列が範囲外になり、書き込みに失敗する）
     sheet, created = _ensure_sheet(ss, config.SHEET_SENDER_LIST, rows=50, cols=26)
     if created:
-        headers = ["サービス名", "送信元メールアドレス", "除外キーワード（件名、カンマ区切り・任意）", "金額の目印文言（任意）"]
-        sheet.update("B2:E2", [headers], value_input_option="USER_ENTERED")
-        sheet.format("B2:E2", {"textFormat": {"bold": True}})
+        headers = ["サービス名", "送信元メールアドレス", "除外キーワード（件名、カンマ区切り・任意）", "金額の目印文言（任意）",
+                   sheets_client.SENDER_LIST_INCLUDE_HEADER]
+        sheet.update("B2:F2", [headers], value_input_option="USER_ENTERED")
+        sheet.format("B2:F2", {"textFormat": {"bold": True}})
 
-        rows = []
-        service_names = ["三井住友カード(Vpass)", "Google Play"]
-        for i, sender in enumerate(config.SENDER_LIST):
-            name = service_names[i] if i < len(service_names) else sender["address"]
-            excludes = ",".join(sender.get("exclude_subject_keywords") or [])
-            amount_keyword = sender.get("amount_keyword") or ""
-            rows.append([name, sender["address"], excludes, amount_keyword])
-
+        rows = [
+            [
+                sender.get("name", sender["address"]), sender["address"],
+                ",".join(sender.get("exclude_subject_keywords") or []), sender.get("amount_keyword") or "",
+                ",".join(sender.get("include_subject_keywords") or []),
+            ]
+            for sender in config.SENDER_LIST
+        ]
         if rows:
-            sheet.update(f"B3:E{2 + len(rows)}", rows, value_input_option="USER_ENTERED")
-
-        sample_row = 3 + len(rows)
-        sheet.update(f"B{sample_row}:E{sample_row}", [[
-            "（例）楽天カード", "info@mail.rakuten-card.co.jp", "", "ご利用金額"
-        ]], value_input_option="USER_ENTERED")
-        sheet.format(f"B{sample_row}:E{sample_row}", {
-            "textFormat": {"foregroundColor": {"red": 0.6, "green": 0.6, "blue": 0.6}, "italic": True}
-        })
-        sheet.update(f"F{sample_row}", [[
-            "← サンプル行です。実際のメールアドレス・文言に書き換えるか、削除してください"
-        ]])
+            sheet.update(f"B3:F{2 + len(rows)}", rows, value_input_option="RAW")
 
         print("   → お使いのカード会社に合わせて、行を追加・編集してください。")
 
-        _apply_borders(sheet, start_row=2, end_row=sample_row, start_col=2, end_col=5)
+        _apply_borders(sheet, start_row=2, end_row=2 + len(rows), start_col=2, end_col=6)
 
 
 def main() -> None:

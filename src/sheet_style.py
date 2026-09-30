@@ -12,7 +12,7 @@
 
 from . import config, sheets_client
 
-LAYOUT_VERSION = 1
+LAYOUT_VERSION = 2  # 2：「送信元リスト」にF列（読み取る件名）を足した
 
 # シート（タブ）の並び順。毎日見るものを左に、たまにしか触らない設定系を右にしている
 # （晃介さん専用版の並び順に、サービス版で増えた「カテゴリルール」「設定」を加えたもの）。
@@ -49,8 +49,8 @@ LAYOUTS = {
         "inputs": ["C"], "data_from": 3,
     },
     config.SHEET_SENDER_LIST: {
-        "widths": [30, 170, 260, 330, 200, 420], "freeze": 2, "headers": ["B2:E2"],
-        "inputs": ["B", "C", "D", "E"], "data_from": 3,
+        "widths": [30, 170, 260, 300, 180, 320], "freeze": 2, "headers": ["B2:F2"],
+        "inputs": ["B", "C", "D", "E", "F"], "data_from": 3,
     },
     config.SHEET_BUDGET: {
         "widths": [30, 110, 100, 110, 100, 110, 100, 110, 120], "freeze": 3, "headers": ["B2:I3"],

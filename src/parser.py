@@ -161,7 +161,14 @@ def extract_usage_date(body: str) -> Optional[datetime]:
     """
     m = _USAGE_DATE_PATTERN.search(body)
     if not m:
-        return None
+        # 「ご利用日｜ご利用金額」のような表の形（見出しの少し後ろに日付がある）。時刻は書かれていない
+        t = _USAGE_DATE_TABLE_PATTERN.search(body)
+        if not t:
+            return None
+        try:
+            return datetime(int(t.group(1)), int(t.group(2)), int(t.group(3)))
+        except ValueError:
+            return None
     year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
     has_time = m.group(4) is not None
 
@@ -181,6 +188,11 @@ def extract_usage_date(body: str) -> Optional[datetime]:
 
 
 _LABEL_LINE_PATTERN = re.compile(r"利用日|利用取引|お支払い|利用金額|合計|定期購入の自動更新")
+
+# 「■利用先：ABCストア」「ご利用店名: ABCストア」のように、店名に見出しが付いている行
+# （三井住友カードの「◇利用先：」は、これまでの記録と店名の形を揃えるため対象外にしている）
+_MERCHANT_LABEL_PATTERN = re.compile(r"^[■●・\s]*(?:ご)?利用(?:先|店|店名|店舗|店舗名)\s*[：:]\s*(\S.*)$", re.MULTILINE)
+_USAGE_DATE_TABLE_PATTERN = re.compile(r"ご?利用日[\s\S]{0,60}?(\d{4})[/／](\d{1,2})[/／](\d{1,2})")
 
 
 def _is_category_only_line(line: str) -> bool:
@@ -236,6 +248,10 @@ def _clean_merchant_line(line: str) -> str:
 
 def extract_merchant_name(body: str, match_index: int, subject: str) -> str:
     """金額の位置から逆算して店舗名・商品名を推定する（GASのextractMerchantNameを移植）。"""
+    labeled = _MERCHANT_LABEL_PATTERN.search(body)
+    if labeled:
+        return _clean_merchant_line(labeled.group(1))
+
     if match_index < 0:
         return subject
 

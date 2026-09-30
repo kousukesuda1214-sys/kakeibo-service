@@ -766,6 +766,48 @@ def reconcile_quick_and_confirmed_transactions() -> tuple[int, list[str]]:
     return len(rows_to_delete), sorted(affected_dates)
 
 
+FLASH_REPORT_MARK = "（速報"
+
+
+def reconcile_flash_reports() -> tuple[int, list[str]]:
+    """
+    楽天カードの「速報版」（利用直後に届く。店名が無い）の行と、後日届く店名入りの通知の行が、
+    同じ買い物について二重に記録されている場合に、速報版の行を消して1件にまとめる。
+    同じ日付・同じ金額の組で、速報版と店名入りの行の少ない方の数だけ、速報版の行を消す
+    （同じ日に同じ金額の買い物を2回した場合も、数が合う分だけまとめる）。
+    @return (削除した件数, 影響を受けた日付のリスト)
+    """
+    sheet = _spreadsheet().worksheet(config.SHEET_DETAIL)
+    records = _call_with_retry(sheet.get_all_values)
+
+    groups: dict[tuple, dict[str, list[int]]] = {}
+    for i, row in enumerate(records):
+        if i < 2 or len(row) < 4 or not row[1] or not str(row[3]).strip():
+            continue
+        try:
+            amount = int(str(row[3]).replace(",", ""))
+        except ValueError:
+            continue
+        key = (row[1].split(" ")[0], amount)
+        kind = "flash" if FLASH_REPORT_MARK in row[2] else "full"
+        groups.setdefault(key, {"flash": [], "full": []})[kind].append(i + 1)
+
+    rows_to_delete: list[int] = []
+    affected_dates: set[str] = set()
+    for (date_key, _amount), g in groups.items():
+        n = min(len(g["flash"]), len(g["full"]))
+        if n:
+            rows_to_delete.extend(g["flash"][:n])
+            affected_dates.add(date_key)
+
+    if not rows_to_delete:
+        return 0, []
+    for row_number in sorted(rows_to_delete, reverse=True):
+        _call_with_retry(sheet.delete_rows, row_number)
+    _recalculate_log_totals_for_dates(sorted(affected_dates))
+    return len(rows_to_delete), sorted(affected_dates)
+
+
 def cleanup_same_moment_duplicates() -> tuple[int, list[str]]:
     """
     「取引明細」の中から、日時（分・秒まで完全一致）・店舗の核名（為替メモや記号を
@@ -1185,7 +1227,9 @@ def get_sender_configs() -> list[dict]:
     SENDER_LISTだけが使われていた）。シートが無い、またはデータが1件も無い場合は
     config.SENDER_LIST（デフォルト）を使う。
     シート構成：A列空欄、B列=サービス名（表示用）、C列=送信元メールアドレス、
-    D列=除外キーワード（件名、カンマ区切り、任意）、E列=金額の目印文言（任意）。
+    D列=除外キーワード（件名、カンマ区切り、任意）、E列=金額の目印文言（任意）、
+    F列=読み取る件名（件名に含む言葉、カンマ区切り、任意）。
+    B列が「（例）」で始まる行は見本なので読まない。
     """
     try:
         sheet = _spreadsheet().worksheet(config.SHEET_SENDER_LIST)
@@ -1193,10 +1237,12 @@ def get_sender_configs() -> list[dict]:
         return config.SENDER_LIST
 
     records = _call_with_retry(sheet.get_all_values)
+    records = _upgrade_sender_list(sheet, records)
     configs = []
     for row in records[2:]:  # 3行目以降がデータ
         address = str(row[2]).strip() if len(row) > 2 else ""
-        if not address:
+        name = str(row[1]).strip() if len(row) > 1 else ""
+        if not address or name.startswith(("（例）", "(例)")):
             continue
         exclude_raw = row[3] if len(row) > 3 else ""
         exclude_keywords = (
@@ -1204,12 +1250,71 @@ def get_sender_configs() -> list[dict]:
         )
         amount_keyword_raw = row[4] if len(row) > 4 else ""
         amount_keyword = str(amount_keyword_raw).strip() or None
+        include_raw = row[5] if len(row) > 5 else ""
+        include_keywords = [s.strip() for s in re.split(r"[,，、]", str(include_raw)) if s.strip()]
         configs.append({
+            "name": name,
             "address": address,
+            "include_subject_keywords": include_keywords,
             "exclude_subject_keywords": exclude_keywords,
             "amount_keyword": amount_keyword,
         })
     return configs if configs else config.SENDER_LIST
+
+
+SENDER_LIST_INCLUDE_HEADER = "読み取る件名（件名に含む言葉・カンマ区切り・任意）"
+
+
+def _upgrade_sender_list(sheet, records: list) -> list:
+    """
+    「送信元リスト」を、新しい形にそろえる。直すところが無ければ、何も書き込まない。
+    - F列「読み取る件名」の見出しが無ければ足す（以前の形のシート）
+    - 見本の行（B列が「（例）」）が、初期設定のカード会社（楽天カード）そのものなら本物の行に書き換える。
+      そうでなければ、見本の行の横の説明文を消す（F列を「読み取る件名」として使うため）
+    - 初期設定と同じアドレスの行で「読み取る件名」が空欄なら、初期設定の言葉を入れる
+      （GAS版から引っ越した人の楽天カードの行など。空欄のままだと宣伝メールまで読んでしまう）。
+      引っ越しはF列の見出しができた後に行われるので、これは毎回確かめる
+    - 以前の形のシートだったときだけ、初期設定のカード会社でまだ入っていないものを足す（1回だけ）
+    """
+    header = records[1] if len(records) > 1 else []
+    old_format = not (len(header) > 5 and str(header[5]).strip())
+
+    defaults = {d["address"].lower(): d for d in config.SENDER_LIST}
+    to_row = lambda d: [
+        d.get("name", d["address"]), d["address"], ",".join(d.get("exclude_subject_keywords") or []),
+        d.get("amount_keyword") or "", ",".join(d.get("include_subject_keywords") or []),
+    ]
+    updates = [{"range": "F2", "values": [[SENDER_LIST_INCLUDE_HEADER]]}] if old_format else []
+    existing = set()
+    for i, row in enumerate(records[2:], start=3):
+        name = str(row[1]).strip() if len(row) > 1 else ""
+        address = str(row[2]).strip().lower() if len(row) > 2 else ""
+        d = defaults.get(address)
+        if name.startswith(("（例）", "(例)")):
+            if d:
+                updates.append({"range": f"B{i}:F{i}", "values": [to_row(d)]})
+                existing.add(address)
+            elif len(row) > 5 and str(row[5]).strip():
+                updates.append({"range": f"F{i}", "values": [[""]]})
+            continue
+        if address:
+            existing.add(address)
+        if d and d.get("include_subject_keywords") and not (len(row) > 5 and str(row[5]).strip()):
+            updates.append({"range": f"F{i}", "values": [[",".join(d["include_subject_keywords"])]]})
+
+    if old_format:
+        missing = [d for d in config.SENDER_LIST if d["address"].lower() not in existing]
+        last = max((i for i, row in enumerate(records, start=1) if any(str(v).strip() for v in row)), default=2)
+        for offset, d in enumerate(missing, start=1):
+            updates.append({"range": f"B{last + offset}:F{last + offset}", "values": [to_row(d)]})
+        need_rows = last + len(missing)
+        if sheet.row_count < need_rows:
+            _call_with_retry(sheet.add_rows, need_rows - sheet.row_count)
+
+    if not updates:
+        return records
+    _call_with_retry(sheet.batch_update, updates, value_input_option="RAW")
+    return _call_with_retry(sheet.get_all_values)
 
 
 def _row_matches_header(row: list, expected: list[str]) -> bool:

@@ -160,6 +160,12 @@ def _process_messages(service, sender_configs, pending_rows, pending_ids, flush)
             sender_config = find_sender_config(msg["from"], sender_configs)
             amount_keyword = sender_config.get("amount_keyword") if sender_config else None
 
+            # 「読み取る件名」が決まっている送信元は、件名にその言葉を含むメールだけを読む
+            # （Gmailの検索でも絞っているが、念のためここでも確かめる。宣伝メールを記録しないため）
+            includes = (sender_config or {}).get("include_subject_keywords") or []
+            if includes and not any(kw in msg["subject"] for kw in includes):
+                continue
+
             extracted = parser.extract_amount_from_message(msg["body"], amount_keyword)
             if not extracted:
                 print(f"金額を抽出できませんでした: {msg['subject']}")
@@ -167,7 +173,14 @@ def _process_messages(service, sender_configs, pending_rows, pending_ids, flush)
 
             matched_count += 1
 
-            merchant = parser.extract_merchant_name(msg["body"], extracted.match_index, msg["subject"])
+            is_flash_report = "速報" in msg["subject"]
+            if is_flash_report:
+                # 楽天カードの「速報版」には店名が無い。後日、店名入りの通知が届いたら、
+                # sheets_client.reconcile_flash_reports() がこの行を消して1件にまとめる
+                service_name = (sender_config or {}).get("name") or "カード"
+                merchant = f"{service_name}{sheets_client.FLASH_REPORT_MARK}・店名は後日）"
+            else:
+                merchant = parser.extract_merchant_name(msg["body"], extracted.match_index, msg["subject"])
             if extracted.note:
                 merchant = f"{merchant}（{extracted.note}）"
 
@@ -177,7 +190,7 @@ def _process_messages(service, sender_configs, pending_rows, pending_ids, flush)
                 merchant = f"{merchant}（返金）"
 
             category = parser.categorize(merchant)
-            if category == config.DEFAULT_CATEGORY:
+            if category == config.DEFAULT_CATEGORY and not is_flash_report:
                 category = parser.ai_categorize(merchant)
             raw_date = datetime.fromtimestamp(msg["date_ms"] / 1000)
             effective_date = get_effective_date(raw_date, msg["body"])
@@ -236,6 +249,11 @@ def run() -> None:
             f"{reconciled_count}件を、確定額に統合しました。\n\n"
             f"対象日：{', '.join(reconciled_dates)}"
         )
+
+    # ①-2b 楽天カードの「速報版」（店名なし）と、後日届いた店名入りの通知の二重記録を、1件にまとめる
+    flash_count, flash_dates = sheets_client.reconcile_flash_reports()
+    if flash_count > 0:
+        print(f"速報版と店名入りの通知の二重記録を{flash_count}件、まとめました（対象日: {', '.join(flash_dates)}）")
 
     # ①-3 同じ日時・同じ店舗が、為替レートの違いだけで金額違いの別行になっている
     # ものも整理する（全期間再構築を日をまたいで複数回行った際に起きる）
