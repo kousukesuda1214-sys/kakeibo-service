@@ -1,6 +1,6 @@
 # 家計簿サービス 引き継ぎ書（HANDOFF）
 
-最終更新：2026/09/29（2回目のチャット：再連携の問題・Node 24対応・プライバシーポリシー・楽天カードの表形式などを対応）
+最終更新：2026/09/30（2回目のチャット：Google Cloud のURL向け直しまで完了。再連携の問題・Node 24対応・プライバシーポリシー・楽天カードの表形式などを対応）
 
 このファイルは、**新しいチャットのClaudeが、このプロジェクトの経緯と今の状態を一度で把握するため**のもの。
 コードはすべてGitHubの公開リポジトリにあるので、**晃介さんにコードの貼り付けを求めず**、自分で読みに行くこと
@@ -80,14 +80,14 @@
 | リッチメニュー画像 | `kakeibo-auth/richmenu.png`（作成コード：`tools/richmenu/draw.py`） | 画像をpush → GASで `setupRichMenu` を実行 |
 | GAS版からの引っ越しコード | `gas/migrate/migrate.gs` | 利用者が自分のGAS版の家計簿の Apps Script に貼って `migrateToNewKakeibo` を実行 |
 | 晃介さん専用版 | GitHub `kakeibo-python`（非公開）／ローカル `~/python/kakeibo` | 今回のサービスとは別。触るときは要確認 |
-| 旧・雛形 | GitHub `kakeibo-template`（公開・Template repository） | 使っていない（Google OAuthのブランディングのURLがこのREADMEを指している） |
-| プライバシーポリシー | `docs/PRIVACY.md`（READMEから要約とリンク） | push で反映。Google Cloud のブランディングのURLをここに向け直す（下記） |
+| 旧・雛形 | GitHub `kakeibo-template`（公開・Template repository） | 使っていない（2026/09/30 にブランディングのURLを kakeibo-service へ向け直したので、もう参照されていない） |
+| プライバシーポリシー | `docs/PRIVACY.md`（READMEから要約とリンク。Google Cloud のブランディングもここを指す） | push で反映 |
 | 秘密の値の作り直し手順 | `docs/SECRETS_ROTATION.md` | 家族以外に広げる前に1回やる |
 | 検証用の控え | ローカル `~/python/kakeibo-auth-test`（`web_client_secret.json`・`runner_key.txt`・`exchange_test.py`） | GitHubには上げない |
 
 ### Google Cloud（プロジェクト `kakeibo-shared`、ID `kakeibo-shared-509402`）
 - 公開ステータス：**本番環境**（未審査。「このアプリは確認されていません」の警告が出る。生涯100ユーザーまで）
-- ブランディング：ホームページ／プライバシーポリシーは `kakeibo-template` のURL（**向け直し待ち**：ホームページ `https://github.com/kousukesuda1214-sys/kakeibo-service`、プライバシーポリシー `https://github.com/kousukesuda1214-sys/kakeibo-service/blob/main/docs/PRIVACY.md`）、承認済みドメイン `github.com`・`kousukesuda1214-sys.github.io`（**これらが無いと本番公開ボタンが押せなかった**）
+- ブランディング（2026/09/30 向け直し済み）：ホームページ `https://github.com/kousukesuda1214-sys/kakeibo-service`、プライバシーポリシー `https://github.com/kousukesuda1214-sys/kakeibo-service/blob/main/docs/PRIVACY.md`、利用規約は空欄。「ブランディングを確認」（審査の申し込み）は押さない。承認済みドメイン `github.com`・`kousukesuda1214-sys.github.io`（**これらが無いと本番公開ボタンが押せなかった**）
 - OAuthクライアント：`kakeibo-web`（ウェブ。リダイレクトURI `https://kousukesuda1214-sys.github.io/kakeibo-auth/`）← 現在使用中。`kakeibo-shared-client`（デスクトップ）は旧雛形用
 
 ### LINE
@@ -158,7 +158,7 @@
 **晃介さんの作業・実機での確認が必要なもの**
 - [ ] **連携し直しの実機テスト**：LINEの「連携・解除」→解除 → 何か送る → 同じGoogleアカウントで連携。連携ページの文言が
       「前の家計簿をそのまま使います」なら drive.file の権限は戻る／「前の家計簿を開けなかった」なら戻らない。**結果をここに書く**
-- [ ] Google Cloud のブランディングのURLを `kakeibo-service` と `docs/PRIVACY.md` に向け直す（上の「Google Cloud」の項）
+- [x] Google Cloud のブランディングのURLを `kakeibo-service` と `docs/PRIVACY.md` に向け直す（2026/09/30 完了）
 - [ ] **楽天カードの店名入りの通知の形を実物で確認**（想定：`■利用先: ○○`、またはHTMLの表。家計簿の店名が「件名」や日付になっていたら直す）
 - [ ] **GAS版からの引っ越しを実際の利用者（恵子さんなど）で試す**。つまずいた所を手順・コードに反映
 - [ ] 家族にQRから友だち追加してもらい、「ようこそ」→連携→2〜3分で準備、の流れを実機で確認
