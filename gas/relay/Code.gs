@@ -9,7 +9,9 @@
  *  3. 晃介さんのPython（GitHub Actions）から合言葉付きで頼まれたら、利用者の一覧と、
  *     1時間で使えなくなる一時的な鍵（access token）だけを渡す。長く使える鍵は外に出さない
  *  4. ブロック（退会）されたら、または「連携解除」と送られたら、その人の鍵を削除し、
- *     Googleのアクセス許可も取り消す（家計簿のスプレッドシートは本人のドライブに残る）
+ *     Googleのアクセス許可も取り消す（家計簿のスプレッドシートは本人のドライブに残る）。
+ *     同じGoogleアカウントで連携し直したときに前の家計簿を使い続けられるよう、
+ *     「どのGoogleアカウントが、どの家計簿を使っていたか」だけを控えておく（past:〜。鍵は残さない）
  *  5. リッチメニュー（トーク画面の下の6つのボタン）が押されたら、Pythonが30分おきに預けていく
  *     「最新の数字」を使って、カード型（Flexメッセージ）で返信する
  *  6. LINEから設定（日次・週次決算の曜日、日次決算の時刻、高額アラートの金額）を変えられるようにする。
@@ -24,7 +26,8 @@
  *  GITHUB_TOKEN              … （任意）連携した直後に親玉をすぐ実行するための、GitHubの鍵。
  *                              kakeibo-service の「Actions：読み書き」だけを許可したもの。
  *                              無くても動く（その場合は30分おきの定期実行で準備される）
- *  ※ 利用者の鍵（user:〜）と連携リンクの控え（state:〜）も、ここに自動で保存される
+ *  ※ 利用者の鍵（user:〜）、連携リンクの控え（state:〜）、最新の数字（snap:〜）、
+ *    連携を解除した人の家計簿の控え（past:〜。メールアドレスは暗号的に変換した形で持つ）も、ここに自動で保存される
  *
  * ■ 返信（reply）はLINEの無料枠を消費しない。push（こちらから送る）だけが月の通数に数えられる。
  *   そのため、友だち追加・メッセージへの応答はすべて返信で行う。
@@ -37,6 +40,7 @@ const REQUIRED_SCOPES = [
   "https://www.googleapis.com/auth/drive.file",
 ];
 const STATE_TTL_MS = 60 * 60 * 1000; // 連携リンクの有効期限：1時間
+const PAST_TTL_MS = 400 * 24 * 60 * 60 * 1000; // 連携を解除した人の家計簿の控えを残す期間：約13か月
 const REQUIRED_PROPS = ["LINE_CHANNEL_ACCESS_TOKEN", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "RUNNER_KEY"];
 const RUNNER_WORKFLOW_URL = "https://api.github.com/repos/kousukesuda1214-sys/kakeibo-service/actions/workflows/run.yml/dispatches";
 
@@ -131,7 +135,8 @@ function messagesFor_(userId, text) {
         "・カード利用メールの読み取りと、家計簿への自動記録を止めました\n" +
         "・このシステムに預けていたGoogleの鍵は削除し、アクセス許可も取り消しました\n" +
         "・これまでの家計簿のスプレッドシートは、あなたのGoogleドライブにそのまま残っています\n\n" +
-        "また使いたくなったら、何かメッセージを送ってください。連携のためのリンクが届きます。",
+        "また使いたくなったら、何かメッセージを送ってください。連携のためのリンクが届きます。" +
+        "同じGoogleアカウントで連携すると、この家計簿の続きから使えます。",
     ];
   }
   if (text === "やめる") return ["連携解除をやめました。これまでどおり家計簿を記録します。"];
@@ -171,8 +176,69 @@ function handleUnfollow_(userId) {
 
 function disconnectUser_(userId, user) {
   revokeGoogleToken_(user.refresh_token);
+  forgetUser_(userId, user);
+}
+
+/** 利用者の鍵と最新の数字を消す。同じGoogleアカウントで連携し直したときのために、家計簿の控えだけ残す。 */
+function forgetUser_(userId, user) {
+  rememberPast_(user);
   props_().deleteProperty("user:" + userId);
   props_().deleteProperty("snap:" + userId);
+}
+
+// ============================================================
+// 連携を解除した人の家計簿の控え（past:〜）
+// 同じGoogleアカウントで連携し直したら、前の家計簿を使い続けるため。鍵は残さない
+// ============================================================
+
+function sameEmail_(a, b) {
+  return String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
+}
+
+function pastKey_(email) {
+  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(email || "").trim().toLowerCase());
+  return "past:" + digest.map((b) => ((b + 256) % 256).toString(16).padStart(2, "0")).join("");
+}
+
+function rememberPast_(user) {
+  if (!user || !user.email || !user.sheet_id) return;
+  props_().setProperty(pastKey_(user.email), JSON.stringify({
+    sheet_id: user.sheet_id,
+    sheet_ready: !!user.sheet_ready,
+    first_connected_at: user.first_connected_at || user.connected_at || null,
+    saved_at: Date.now(),
+  }));
+}
+
+/** 控えを読む（消すのは、連携し直しの保存が済んでから） */
+function getPast_(email) {
+  const raw = prop_(pastKey_(email));
+  if (!raw) return null;
+  try {
+    const past = JSON.parse(raw);
+    return past.saved_at + PAST_TTL_MS < Date.now() ? null : past;
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * 新しい鍵で、前の家計簿を開けるか（ごみ箱に入っていないか）を確かめる。
+ * 権限は「このシステムが作ったファイルだけ」（drive.file）なので、連携し直した後に
+ * 前のファイルを開けるかどうかは、実際に試して確かめる。
+ */
+function canOpenSheet_(sheetId, accessToken) {
+  if (!sheetId) return false;
+  try {
+    const res = UrlFetchApp.fetch(
+      "https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(sheetId) + "?fields=id,trashed",
+      { headers: { Authorization: "Bearer " + accessToken }, muteHttpExceptions: true }
+    );
+    if (res.getResponseCode() !== 200) return false;
+    return !JSON.parse(res.getContentText()).trashed;
+  } catch (err) {
+    return false;
+  }
 }
 
 function reply_(replyToken, texts) {
@@ -214,11 +280,12 @@ function cleanupStates_() {
   const all = props_().getProperties();
   const now = Date.now();
   Object.keys(all).forEach((k) => {
-    if (k.indexOf("state:") !== 0) return;
     try {
-      if (JSON.parse(all[k]).exp < now) props_().deleteProperty(k);
+      if (k.indexOf("state:") === 0 && JSON.parse(all[k]).exp < now) props_().deleteProperty(k);
+      // 連携を解除してから長くたった人の家計簿の控えも消す
+      if (k.indexOf("past:") === 0 && JSON.parse(all[k]).saved_at + PAST_TTL_MS < now) props_().deleteProperty(k);
     } catch (err) {
-      props_().deleteProperty(k);
+      if (k.indexOf("state:") === 0 || k.indexOf("past:") === 0) props_().deleteProperty(k);
     }
   });
 }
@@ -269,11 +336,40 @@ function handleConnect_(code, state) {
 
     const email = googleGet_("https://gmail.googleapis.com/gmail/v1/users/me/profile", token.access_token).emailAddress;
 
-    // 連携し直しの場合は、古い鍵を無効にして、家計簿スプレッドシートはそのまま使う
+    const now = new Date().toISOString();
     const old = getUser_(userId);
-    if (old && old.refresh_token && old.refresh_token !== token.refresh_token) revokeGoogleToken_(old.refresh_token);
-    let sheetId = old && old.email === email ? old.sheet_id : null;
-    let sheetReady = old && old.email === email ? !!old.sheet_ready : false;
+    const sameAccount = !!old && sameEmail_(old.email, email);
+    let sheetId = null;
+    let sheetReady = false;
+    let firstConnectedAt = null;
+    let resumed = false; // 連携を解除していた人が、前の家計簿を使い続ける
+    let lostSheet = false; // 前の家計簿があったが、開けなかった（新しく作る）
+
+    if (sameAccount) {
+      // 同じGoogleアカウントで連携し直した：家計簿はそのまま使う。
+      // 古い鍵は取り消さない（取り消しは「このアプリへの許可」ごと外すので、今もらった新しい鍵まで使えなくなるため）
+      sheetId = old.sheet_id;
+      sheetReady = !!old.sheet_ready;
+      firstConnectedAt = old.first_connected_at || old.connected_at;
+    } else {
+      if (old) {
+        // 別のGoogleアカウントに切り替えた：前のアカウントの鍵は取り消し、家計簿の控えを残す
+        revokeGoogleToken_(old.refresh_token);
+        rememberPast_(old);
+      }
+      // 以前このGoogleアカウントで使っていた人なら、前の家計簿を使い続ける
+      const past = getPast_(email);
+      if (past) {
+        firstConnectedAt = past.first_connected_at;
+        if (canOpenSheet_(past.sheet_id, token.access_token)) {
+          sheetId = past.sheet_id;
+          sheetReady = !!past.sheet_ready;
+          resumed = true;
+        } else {
+          lostSheet = true;
+        }
+      }
+    }
 
     if (!sheetId) {
       const created = googlePost_("https://sheets.googleapis.com/v4/spreadsheets", token.access_token, {
@@ -288,22 +384,31 @@ function handleConnect_(code, state) {
       email: email,
       sheet_id: sheetId,
       sheet_ready: sheetReady,
-      connected_at: new Date().toISOString(),
+      connected_at: now,
+      // 最初に連携した日。取り込むメールの範囲を決めるのに使う（連携していなかった間のメールも拾うため）
+      first_connected_at: firstConnectedAt || now,
     });
-    console.log("連携が完了しました");
+    // 使い終わった控えは消す（連携中はこの利用者の記録が正になる）
+    props_().deleteProperty(pastKey_(email));
+    console.log("連携が完了しました" + (resumed ? "（前の家計簿を使い続けます）" : lostSheet ? "（前の家計簿を開けなかったため新しく作りました）" : ""));
 
-    // 新しい家計簿なら、30分おきの定期実行を待たずに、親玉を今すぐ動かして準備する
-    const triggered = !sheetReady && triggerRunner_();
+    // 新しい家計簿、または連携していなかった間のメールを取り込む必要があるなら、
+    // 30分おきの定期実行を待たずに、親玉を今すぐ動かす
+    const triggered = (!sheetReady || resumed) && triggerRunner_();
+    const soon = triggered ? "2〜3分" : "30分以内";
 
-    return {
-      ok: true,
-      sheet_url: sheetUrl_(sheetId),
-      message: sheetReady
-        ? "連携し直しが完了しました。これまでの家計簿をそのまま使います。"
-        : triggered
-          ? "連携が完了しました！2〜3分で家計簿の準備が整い、LINEでお知らせが届きます。"
-          : "連携が完了しました！30分以内に家計簿の準備が整い、LINEでお知らせが届きます。",
-    };
+    let message;
+    if (sheetReady && resumed) {
+      message = "連携し直しが完了しました。前の家計簿をそのまま使います。連携していなかった間のカード利用も、" + soon + "で記録します。";
+    } else if (sheetReady) {
+      message = "連携し直しが完了しました。これまでの家計簿をそのまま使います。";
+    } else if (lostSheet) {
+      message = "連携が完了しました！前の家計簿を開けなかったため、新しい家計簿を作りました（前の家計簿はGoogleドライブに残っています）。" +
+        soon + "で準備が整い、これまでのカード利用も取り込み直します（量が多いと数時間かかります）。";
+    } else {
+      message = "連携が完了しました！" + soon + "で家計簿の準備が整い、LINEでお知らせが届きます。";
+    }
+    return { ok: true, sheet_url: sheetUrl_(sheetId), message: message };
   } finally {
     lock.releaseLock();
   }
@@ -328,7 +433,8 @@ function handleRunner_(body) {
         email: user.email,
         sheet_id: user.sheet_id,
         sheet_ready: !!user.sheet_ready,
-        connected_at: user.connected_at, // 初回に取り込むメールの範囲を決めるのに使う
+        connected_at: user.connected_at,
+        import_from: user.first_connected_at || user.connected_at, // 取り込むメールの範囲を決めるのに使う
         access_token: accessToken, // 1時間で使えなくなる一時的な鍵だけを渡す
       });
     });
@@ -393,8 +499,7 @@ function refreshAccessToken_(userId, user) {
 
   if (data.error === "invalid_grant") {
     // 本人がGoogle側で許可を取り消した、パスワードを変えた など → 鍵を捨てて、連携し直しを案内する
-    props_().deleteProperty("user:" + userId);
-    props_().deleteProperty("snap:" + userId);
+    forgetUser_(userId, user);
     push_(
       userId,
       "⚠️ Googleアカウントとの連携が切れたため、家計簿の自動記録を止めました。\n" +
@@ -990,5 +1095,6 @@ function checkSetup() {
   console.log((all.GITHUB_TOKEN ? "✅ " : "➖ 未設定（任意）：") + "GITHUB_TOKEN");
   const users = Object.keys(all).filter((k) => k.indexOf("user:") === 0).length;
   const states = Object.keys(all).filter((k) => k.indexOf("state:") === 0).length;
-  console.log("連携済みの利用者：" + users + "人 ／ 有効な連携リンク：" + states + "件");
+  const pasts = Object.keys(all).filter((k) => k.indexOf("past:") === 0).length;
+  console.log("連携済みの利用者：" + users + "人 ／ 有効な連携リンク：" + states + "件 ／ 連携を解除した人の家計簿の控え：" + pasts + "件");
 }

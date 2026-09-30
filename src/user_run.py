@@ -12,6 +12,7 @@ runner.py（親玉）から、利用者ごとに「別々のプロセス」と�
   LINE_USER_ID        … その人のLINEのユーザーID
   SHEET_READY         … 家計簿のシートの準備が済んでいれば "1"
   PROCESS_AFTER       … これより前のメールは処理しない（yyyy/mm/dd）
+  MAX_MESSAGES_PER_RUN … 1回の実行で読むメールの上限（残りは次回）
   KAKEIBO_SERVICE_MODE … "1"（エラーを利用者ではなく親玉に伝えるための目印）
 """
 
@@ -26,6 +27,8 @@ import base64  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 
+from datetime import datetime, timedelta  # noqa: E402
+
 from . import initial_setup, line_client, notify, sheets_client  # noqa: E402
 from . import main as kakeibo_main  # noqa: E402
 from .settings import ensure_settings_sheet  # noqa: E402
@@ -33,6 +36,29 @@ from .sheet_style import apply_layout_if_outdated, ensure_sheet_order  # noqa: E
 from . import snapshot  # noqa: E402
 
 DEFAULT_SHEET_TITLES = ("シート1", "Sheet1")
+
+
+def _is_long_import() -> bool:
+    """取り込む範囲が1か月半より長い（＝以前にも使っていた人の取り込み直し）かどうか。"""
+    try:
+        after = datetime.strptime(os.environ.get("PROCESS_AFTER", ""), "%Y/%m/%d")
+    except ValueError:
+        return False
+    return datetime.now() - after > timedelta(days=45)
+
+
+def prepare_reimport() -> int:
+    """新しい家計簿がまだ空のときに、以前の家計簿で処理済みになっていたメールの目印を外す。
+    同じGoogleアカウントで連携し直したが、前の家計簿を開けずに新しく作った場合に、
+    過去のカード利用を新しい家計簿へ取り込み直すため（目印が付いたままだと読まれない）。
+    家計簿に1件でも記録があれば何もしないので、何度呼ばれても二重には記録されない。
+    目印を外したメールの件数を返す（初めての利用者は0件）。"""
+    if sheets_client.get_parsed_detail_rows():
+        return 0
+    service = gmail_client.get_gmail_service()
+    ids = gmail_client.find_processed_message_ids(service, sheets_client.get_sender_configs())
+    gmail_client.remove_processed_label(service, ids)
+    return len(ids)
 
 
 def setup_sheet() -> None:
@@ -51,6 +77,11 @@ def setup_sheet() -> None:
         if ws.title in DEFAULT_SHEET_TITLES and len(ss.worksheets()) > 1:
             ss.del_worksheet(ws)
 
+    # 以前の家計簿で処理済みのメールがあれば、取り込み直せるように目印を外す
+    reimport_count = prepare_reimport()
+    if reimport_count:
+        print(f"以前に処理したメール{reimport_count}件を、新しい家計簿に取り込み直します")
+
     print("KAKEIBO_SHEET_READY")  # runner.py が、中継役に「準備済み」と伝えるための目印
 
     sheet_url = f"https://docs.google.com/spreadsheets/d/{config.GOOGLE_SHEET_ID}/edit"
@@ -61,8 +92,12 @@ def setup_sheet() -> None:
         "①「送信元リスト」シートに、お使いのカード会社の通知メールのアドレスがあるか確認する（無ければ追加）\n"
         "②「設定」シートで、カードの締め日・引落し日を確認する\n"
         "③「予算計画」シートに、毎月の予算を入力する\n\n"
-        "直近1か月分のカード利用メールも、このあと自動で取り込みます。\n"
-        "毎日決まった時刻に、このLINEで日次決算をお知らせします。"
+        + (
+            "これまでのカード利用メールも、このあと自動で取り込み直します（量が多いと数時間かかります）。\n"
+            if reimport_count or _is_long_import()
+            else "直近1か月分のカード利用メールも、このあと自動で取り込みます。\n"
+        )
+        + "毎日決まった時刻に、このLINEで日次決算をお知らせします。"
     )
 
 

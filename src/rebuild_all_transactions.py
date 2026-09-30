@@ -17,6 +17,11 @@
 途中で失敗しても③まではシートを一切変更しておらず、④以降で失敗した場合も
 ③で作ったバックアップシートから手動で復元できる。
 
+■ 家計簿サービス（kakeibo-service）では使わない
+  サービス版の利用者の家計簿は、運営者のパソコンからは開けない（権限が利用者ごとの一時的な鍵だけのため）。
+  サービス版で過去のメールを取り込み直したいときは、連携し直しの仕組み（user_run.prepare_reimport）が自動で行う。
+  このスクリプトは、自分のGoogleアカウントの家計簿（晃介さん専用版と同じ使い方）に対してだけ使う。
+
 ■ 実行方法（自分のパソコンで実行する。GitHub Actionsでは実行できない）
     python -m src.rebuild_all_transactions
 
@@ -37,7 +42,7 @@ from googleapiclient.errors import HttpError
 
 from . import config, parser, sheets_client
 from .gmail_client import _build_query, _get_or_create_label_id, _get_plain_body, get_gmail_service
-from .main import find_sender_config, get_effective_date
+from .main import SKIP_SUBJECT, parse_card_email
 from .settings import apply_sheet_settings
 
 
@@ -148,26 +153,12 @@ def main() -> None:
         subject = headers.get("Subject", "")
         from_header = headers.get("From", "")
 
-        sender_config = find_sender_config(from_header, sender_configs)
-        amount_keyword = sender_config.get("amount_keyword") if sender_config else None
-
-        extracted = parser.extract_amount_from_message(body, amount_keyword)
-        if extracted:
-            merchant = parser.extract_merchant_name(body, extracted.match_index, subject)
-            if extracted.note:
-                merchant = f"{merchant}（{extracted.note}）"
-
-            amount = extracted.amount
-            if parser.is_refund(subject, body):
-                amount = -abs(amount)
-                merchant = f"{merchant}（返金）"
-
-            category = parser.categorize(merchant)
-            if category == config.DEFAULT_CATEGORY:
-                category = parser.ai_categorize(merchant)
-            raw_date = datetime.fromtimestamp(int(msg["internalDate"]) / 1000)
-            effective_date = get_effective_date(raw_date, body)
-
+        parsed = parse_card_email(subject, from_header, body, int(msg["internalDate"]), sender_configs)
+        if parsed == SKIP_SUBJECT:
+            # 読み取る件名に合わないメール（宣伝メールなど）は、記録もラベル付けもしない
+            continue
+        if parsed:
+            effective_date, merchant, amount, category = parsed
             extracted_rows.append((effective_date, merchant, amount, category))
 
             date_key = effective_date.strftime("%Y/%m/%d")
@@ -203,6 +194,11 @@ def main() -> None:
 
     print("⑤-2 即時通知/確定通知の二重記録を整理しています…")
     reconciled_count, reconciled_dates = sheets_client.reconcile_quick_and_confirmed_transactions()
+
+    print("⑤-2b 楽天カードの速報版と店名入りの通知の二重記録を整理しています…")
+    flash_count, _flash_dates = sheets_client.reconcile_flash_reports()
+    if flash_count:
+        print(f"　速報版を{flash_count}件、店名入りの記録にまとめました")
 
     print("⑤-3 同一日時・同一店舗の為替レート違いによる重複を整理しています…")
     same_moment_count, same_moment_dates = sheets_client.cleanup_same_moment_duplicates()

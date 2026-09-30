@@ -1,6 +1,6 @@
 # 家計簿サービス 引き継ぎ書（HANDOFF）
 
-最終更新：2026/09/29（Claudeとのチャットで作成）
+最終更新：2026/09/29（2回目のチャット：再連携の問題・Node 24対応・プライバシーポリシー・楽天カードの表形式などを対応）
 
 このファイルは、**新しいチャットのClaudeが、このプロジェクトの経緯と今の状態を一度で把握するため**のもの。
 コードはすべてGitHubの公開リポジトリにあるので、**晃介さんにコードの貼り付けを求めず**、自分で読みに行くこと
@@ -15,7 +15,9 @@
    `curl -s "https://api.github.com/repos/kousukesuda1214-sys/kakeibo-service/git/trees/main?recursive=1" | python3 -c "import json,sys;[print(t['path']) for t in json.load(sys.stdin)['tree']]"`
 3. 必要なファイルを読む：`curl -s https://raw.githubusercontent.com/kousukesuda1214-sys/kakeibo-service/main/<パス>`
    （キャッシュで古い版が返ることがある。最新のコミットを使うなら `.../kakeibo-service/<コミットID>/<パス>`）
-4. 晃介さんに「どこから再開するか」を、「6. 残っている作業」から確認する
+4. **前回のチャットの変更が反映済みか確認する**：`git log` に「連携し直しで前の家計簿を使い続ける」のコミットがあるか、
+   `gas/relay/Code.gs` と script.google.com の中継役が同じか（`getPast_` という関数があるか）を晃介さんに確認してもらう
+5. 晃介さんに「どこから再開するか」を、「6. 残っている作業」から確認する
 
 ---
 
@@ -50,6 +52,16 @@
    runner.py はスナップショットを中継役に預ける（LINEのボタンで即答するため）
 ```
 
+### 連携解除 → 連携し直し（2026/09/29 対応）
+- 解除・ブロック・連携切れ（invalid_grant）のとき、中継役は鍵を消すが、`past:<メールのSHA-256>` に
+  「家計簿のファイルID・準備済みか・最初に連携した日」だけを約13か月（400日）残す
+- 同じGoogleアカウントで連携し直すと（LINEアカウントが違ってもよい）、新しい鍵で前の家計簿を開けるかを Drive API で確認
+  - 開ける → 前の家計簿を使い続ける。取り込む範囲は「最初に連携した日の31日前」から（解除していた間のメールも拾う。処理済みラベル付きは読まないので二重にならない）
+  - 開けない（drive.file の権限が戻らない・ごみ箱）→ 新しい家計簿を作り、`user_run.prepare_reimport()` が**家計簿が空のときだけ**処理済みラベルを外して取り込み直す
+- **drive.file の権限が再連携後も前のファイルに効くかは、まだ実機で未確認**（どちらでも動くように作ってある。連携ページの文言でどちらになったか分かる）
+- 同じLINE・同じGoogleアカウントで「連携し直す」を押したときは、古い鍵を**取り消さない**（Googleの取り消しはアプリへの許可ごと外すため、新しい鍵まで無効になるおそれがあった）
+- 1回の実行で読むメールは300件まで（`runner.MAX_MESSAGES_PER_RUN`）。残りは次の実行へ（時間切れで目印だけ付いて記録されない、を防ぐ）。取り込む範囲は最長400日（`MAX_IMPORT_DAYS`）
+
 ### 権限の方針（大事）
 - Googleの権限は最小限：`gmail.modify` と `drive.file`（**このシステムが作ったファイルだけ**）。利用者の他のファイルには触れない
 - 長く使える鍵は中継役の外に出さない。Pythonには1時間で失効する access token だけ渡す
@@ -69,11 +81,13 @@
 | GAS版からの引っ越しコード | `gas/migrate/migrate.gs` | 利用者が自分のGAS版の家計簿の Apps Script に貼って `migrateToNewKakeibo` を実行 |
 | 晃介さん専用版 | GitHub `kakeibo-python`（非公開）／ローカル `~/python/kakeibo` | 今回のサービスとは別。触るときは要確認 |
 | 旧・雛形 | GitHub `kakeibo-template`（公開・Template repository） | 使っていない（Google OAuthのブランディングのURLがこのREADMEを指している） |
+| プライバシーポリシー | `docs/PRIVACY.md`（READMEから要約とリンク） | push で反映。Google Cloud のブランディングのURLをここに向け直す（下記） |
+| 秘密の値の作り直し手順 | `docs/SECRETS_ROTATION.md` | 家族以外に広げる前に1回やる |
 | 検証用の控え | ローカル `~/python/kakeibo-auth-test`（`web_client_secret.json`・`runner_key.txt`・`exchange_test.py`） | GitHubには上げない |
 
 ### Google Cloud（プロジェクト `kakeibo-shared`、ID `kakeibo-shared-509402`）
 - 公開ステータス：**本番環境**（未審査。「このアプリは確認されていません」の警告が出る。生涯100ユーザーまで）
-- ブランディング：ホームページ／プライバシーポリシーは `kakeibo-template` のURL、承認済みドメイン `github.com`・`kousukesuda1214-sys.github.io`（**これらが無いと本番公開ボタンが押せなかった**）
+- ブランディング：ホームページ／プライバシーポリシーは `kakeibo-template` のURL（**向け直し待ち**：ホームページ `https://github.com/kousukesuda1214-sys/kakeibo-service`、プライバシーポリシー `https://github.com/kousukesuda1214-sys/kakeibo-service/blob/main/docs/PRIVACY.md`）、承認済みドメイン `github.com`・`kousukesuda1214-sys.github.io`（**これらが無いと本番公開ボタンが押せなかった**）
 - OAuthクライアント：`kakeibo-web`（ウェブ。リダイレクトURI `https://kousukesuda1214-sys.github.io/kakeibo-auth/`）← 現在使用中。`kakeibo-shared-client`（デスクトップ）は旧雛形用
 
 ### LINE
@@ -85,7 +99,7 @@
 ### 秘密の値（名前だけ。値はここに書かない）
 - GitHub Secrets（kakeibo-service）：`RELAY_URL`・`RUNNER_KEY`・`LINE_CHANNEL_ACCESS_TOKEN`・`ANTHROPIC_API_KEY`
 - GASスクリプトプロパティ：`LINE_CHANNEL_ACCESS_TOKEN`・`GOOGLE_CLIENT_ID`・`GOOGLE_CLIENT_SECRET`・`RUNNER_KEY`・`GITHUB_TOKEN`（fine-grained、kakeibo-serviceの Actions: Read and write のみ、期限なし）
-  ＋自動保存：`user:<LINE userId>`（鍵・メール・sheet_id・sheet_ready・connected_at）・`state:<uuid>`（連携リンク・1時間）・`snap:<userId>`（最新の数字）
+  ＋自動保存：`user:<LINE userId>`（鍵・メール・sheet_id・sheet_ready・connected_at・first_connected_at）・`state:<uuid>`（連携リンク・1時間）・`snap:<userId>`（最新の数字）・`past:<メールのSHA-256>`（解除した人の家計簿の控え・400日）
 - LINEトークン・ANTHROPIC_API_KEY の元は `~/python/kakeibo/.env`。**LINEのトークンは再発行しない**（晃介さん専用版が止まる）
 
 ---
@@ -97,7 +111,8 @@
 - リッチメニュー6ボタン：今日の決算／家計簿を開く／設定／今月のカテゴリ別／使い方／連携・解除（すべてFlexのカードで返信）
 - 「設定」はスプレッドシートの「設定」シートをその場で読む。日次決算の曜日・週次決算の曜日（月〜日のトグル＋毎日/平日/週末）、日次決算の時刻、高額アラート金額は **LINEから変更でき、シートに書き込む**（設定の正はシートだけ）
 - 連携解除は確認ダイアログ付き。ブロック／解除で鍵削除＋Googleの許可取り消し（シートは残る）。偽の退会イベントはLINEのプロフィールAPIで確認
-- 連携完了時に GitHub API で親玉をすぐ実行
+- 連携完了時に GitHub API で親玉をすぐ実行（連携し直しで前の家計簿を使い続ける場合も、解除中のメールを拾うためすぐ実行）
+- 同じGoogleアカウントで連携し直すと前の家計簿の続きから使える（上の「連携解除 → 連携し直し」）
 
 **家計簿（Python）**
 - 設定はすべて「設定」シート（`src/settings.py`）：タイムゾーン、締め日（「末日」可）、引落し日、日次決算の時刻、**日次決算を送る曜日（週1〜7回）**、**週次決算を送る曜日（送らない可）**、高額アラート金額、仮の予算、通知に表示する名前、支払日通知。項目が増えたら関係する項目の下に自動で差し込み、説明文も自動更新。読めない値は状態欄に理由を出して初期値で動く
@@ -108,6 +123,8 @@
 - 同じエラーのLINE通知は1日1回（`notify.py`）。サービス版ではエラーは運営者側へ
 - LINEの月の上限（429 monthly limit）はエラーにせず諦める
 - **楽天カード対応**：送信元リストに F列「読み取る件名」（楽天は「カード利用のお知らせ」だけ＝宣伝メールを読まない）。HTMLだけのメールも文字に変換して読む。表形式の金額・利用日を読める。**速報版**は「楽天カード（速報・店名は後日）」で即記録し、店名入りの通知が来たら同じ日・同じ金額の速報行を消してまとめる（`reconcile_flash_reports`）
+- メール1通を記録1行にする処理は `main.parse_card_email()` に共通化（定期実行と `rebuild_all_transactions.py` が同じ読み方をする）
+- 店名の読み取り：結果が日付だけ・見出しだけ・件名そのもの、なら**表の形として読み直す**（縦の表「ご利用先」の次の行／横の表「ご利用日・ご利用先…」の見出しと値の並び）。利用日は「2026年9月28日」の形も読める。楽天の店名入り通知がHTMLの表で来ても読めるはず（実物は未確認）
 - 三井住友カードの即時通知/確定通知のまとめ、重複整理、年間サマリー、サブスク棚卸し、ヘルスチェック、振り返りコメント（AI）など、専用版の機能は一通りある
 
 **GAS版からの引っ越し**：`gas/migrate/migrate.gs`（利用者が自分で実行する方式）。取引明細・ログは新しい家計簿に無い期間だけコピー、予算計画は項目ごとにマージ、カテゴリ予算・送信元リストは置き換え、GAS版のトリガーを削除。何度実行しても重複しない
@@ -121,24 +138,40 @@
 - LINEは無料プランのまま様子を見る。日次決算を減らす／返信で見る方式で節約できる
 - 「設定」シートのプルダウン化は見送り（LINEから設定を変えられるようにしたため）
 - 既存の利用者のシートは、値を消さずに自動で新しい形にそろえる（行の差し込み・説明文・版数・並び順）。ただし「予算計画」の2段見出しのような**形そのものの作り替えは新しい家計簿だけ**
+- 連携を解除した人の「どの家計簿を使っていたか」の控えは、メールアドレスをSHA-256に変換して400日残す（プライバシーポリシーに明記。すぐ消したい人は運営者に連絡）
+- 秘密の値の作り直しは、家族以外に広げる前にまとめて行う（`docs/SECRETS_ROTATION.md`）
 - 晃介さん専用版はサービス版に移らない（15分おき・お父様への支払日通知などがあるため）。GitHub Actionsの無料枠を9月分で使い切り、**10月1日のリセットまで待つ**ことにした（止まっていた分は再開後にまとめて記録される）
 
 ---
 
 ## 6. 残っている作業・確認待ち
 
-- [ ] **楽天カードの店名入りの通知の形を実物で確認**（想定：`■利用先: ○○`。店名が件名になっていたら直す）
+**2026/09/29（2回目のチャット）で対応したもの**（zip `kakeibo-service-update-20260929.zip` と `Code.gs` で渡した。反映済みかは「0.」の4で確認）
+- [x] 連携解除 → 連携し直しで空の家計簿が作られる問題（中継役の `past:` 控え＋Pythonの取り込み直し）
+- [x] 同じアカウントで「連携し直す」と新しい鍵まで取り消されるおそれがあった問題
+- [x] `actions/checkout@v7`・`actions/setup-python@v7`（Node 24。入力の変更なし）
+- [x] プライバシーポリシーを今の仕組みに合わせて `docs/PRIVACY.md` に（スナップショットと解除後の控えも明記）
+- [x] `rebuild_all_transactions.py` を件名の絞り込み・楽天の速報版に対応（`parse_card_email` を共通で使う）。サービス版では使わない旨を明記
+- [x] 楽天の店名入り通知が表の形でも読めるように（実物での確認は下に残す）
+- [x] 秘密の値の作り直し手順書 `docs/SECRETS_ROTATION.md`
+
+**晃介さんの作業・実機での確認が必要なもの**
+- [ ] **連携し直しの実機テスト**：LINEの「連携・解除」→解除 → 何か送る → 同じGoogleアカウントで連携。連携ページの文言が
+      「前の家計簿をそのまま使います」なら drive.file の権限は戻る／「前の家計簿を開けなかった」なら戻らない。**結果をここに書く**
+- [ ] Google Cloud のブランディングのURLを `kakeibo-service` と `docs/PRIVACY.md` に向け直す（上の「Google Cloud」の項）
+- [ ] **楽天カードの店名入りの通知の形を実物で確認**（想定：`■利用先: ○○`、またはHTMLの表。家計簿の店名が「件名」や日付になっていたら直す）
 - [ ] **GAS版からの引っ越しを実際の利用者（恵子さんなど）で試す**。つまずいた所を手順・コードに反映
 - [ ] 家族にQRから友だち追加してもらい、「ようこそ」→連携→2〜3分で準備、の流れを実機で確認
-- [ ] 「連携解除→同じアカウントで連携し直し」で**空の家計簿が新しく作られる**問題（過去のメールは処理済みラベル付きで取り込まれない）。同じメールなら前の家計簿を使い続けたい（drive.file の権限が再連携後も前のファイルに効くかの確認が必要）
-- [ ] プライバシーポリシー（README）を今の仕組み（中継役に鍵を保管・運営者が処理）に合わせて更新し、Google Cloud のブランディングのURLを `kakeibo-service` に向け直す
-- [ ] 家族以外に広げる前に、LINEトークン・Googleのクライアントシークレットを作り直す（以前チャットのスクショに写ったため）
-- [ ] `actions/checkout@v4`・`setup-python@v5` を Node 24 対応版に上げる（Actionsの警告）
-- [ ] `notify.py` の同一エラー1日1回の間引きを、晃介さん専用版 `kakeibo-python` にも移植
-- [ ] 利用者が増えたら：LINE有料プラン、状態で出し分けるリッチメニュー（連携前は2ボタン）、「お父様への支払日通知」のような追加の送り先
-- `src/rebuild_all_transactions.py`・`recategorize_all_transactions.py` はローカル用の古い道具で、サービス版の流れ（速報版・件名の絞り込み）には未対応
+- [ ] 家族以外に広げる前に、LINEトークン・Googleのクライアントシークレットを作り直す（手順：`docs/SECRETS_ROTATION.md`）
 
----
+**Claudeが読めないため保留**
+- [ ] `notify.py` の同一エラー1日1回の間引きを、晃介さん専用版 `kakeibo-python` にも移植（非公開リポジトリなので curl で読めない。
+      専用版はActionsの無料枠のため10月1日まで止まっている。再開後に、晃介さんが一時的に読めるようにする／該当ファイルをzipで渡してもらう等を相談）
+
+**利用者が増えたら**
+- [ ] LINE有料プラン、状態で出し分けるリッチメニュー（連携前は2ボタン）、「お父様への支払日通知」のような追加の送り先
+- 連携し直しの取り込み直しで、LINEの「重複の疑い」「重複を整理しました」通知（push）が出ることがある（1回の実行で最大1通ずつ）。気になったら取り込み直し中は止める
+- `src/recategorize_all_transactions.py` はローカル用（自分の家計簿向け）の道具
 
 ## 7. 晃介さんとのやりとりの約束ごと（とても大事）
 
@@ -146,7 +179,7 @@
 - ファイルは**zipでまとめて渡し**、反映は次の形のコマンドで（ダウンロードフォルダの同名ファイルの取り違えを防ぐ）：
   ```bash
   cd ~/python/kakeibo-service
-  unzip -o "$(ls -t ~/Downloads/kakeibo-service-updateN*.zip | head -1)"
+  unzip -o "$(ls -t ~/Downloads/kakeibo-service-update*.zip | head -1)"
   python -m py_compile src/*.py && echo "✅ 構文エラーなし"
   git add -A && git commit -m "…" && git push
   ```
@@ -158,5 +191,6 @@
 - Secrets の登録は `gh secret set NAME`（値を画面に出さない）。**チャット欄のコピーボタンの中身（コマンドの文字）をそのままGitHubに貼ってしまった失敗がある**ので、コピー＆ペーストの行き来は避ける
 - 秘密の値が写った画面はスクショを送らないよう毎回ひと声かける
 - VS Codeで新規ファイルを作って貼る方式は、ファイル名・場所がずれやすかった（「Annual summary」「parser . py」など）。**ダウンロード＋コマンドで入れる**
-- 変更は**Claude側で模擬環境のテストをしてから**渡す（GASはNodeでモック、Pythonは偽のスプレッドシートで範囲チェック付き）。pushやデプロイは全員に即反映されるため
+- 変更は**Claude側で模擬環境のテストをしてから**渡す（GASはNodeでモック、Pythonは偽のスプレッドシート・偽のGmail）。pushやデプロイは全員に即反映されるため
+- GitHub API（api.github.com）は共有のIPで回数制限（1時間60回）にすぐ当たる。当たったら `git clone https://github.com/kousukesuda1214-sys/<リポジトリ>.git` で読む（github.com は使える）
 - zshのプロンプトに複数行を貼ると、途中で切れて `for>` や `dquote>` で止まることがある → `control + C` で戻る。長いコマンドは1行にまとめる

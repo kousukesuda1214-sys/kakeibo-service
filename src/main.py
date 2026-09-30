@@ -29,6 +29,7 @@
   確定させ、後続の重複整理・決算処理は必ず実行する。
 """
 
+import os
 from datetime import datetime, timedelta
 
 from . import (
@@ -138,6 +139,50 @@ def process_new_emails() -> int:
     return matched_count
 
 
+SKIP_SUBJECT = "skip_subject"
+
+
+def parse_card_email(subject: str, from_header: str, body: str, date_ms: int, sender_configs: list[dict]):
+    """カード利用通知メール1通から、記録する1行（記録日, 店名, 金額, カテゴリ）を作る。
+    「読み取る件名」に合わないメールは SKIP_SUBJECT、金額が読めなければ None を返す。
+    定期実行（このファイル）と、全期間の作り直し（rebuild_all_transactions.py）で同じ読み方をするための共通の処理。"""
+    sender_config = find_sender_config(from_header, sender_configs)
+    amount_keyword = sender_config.get("amount_keyword") if sender_config else None
+
+    # 「読み取る件名」が決まっている送信元は、件名にその言葉を含むメールだけを読む
+    # （Gmailの検索でも絞っているが、念のためここでも確かめる。宣伝メールを記録しないため）
+    includes = (sender_config or {}).get("include_subject_keywords") or []
+    if includes and not any(kw in subject for kw in includes):
+        return SKIP_SUBJECT
+
+    extracted = parser.extract_amount_from_message(body, amount_keyword)
+    if not extracted:
+        return None
+
+    is_flash_report = "速報" in subject
+    if is_flash_report:
+        # 楽天カードの「速報版」には店名が無い。後日、店名入りの通知が届いたら、
+        # sheets_client.reconcile_flash_reports() がこの行を消して1件にまとめる
+        service_name = (sender_config or {}).get("name") or "カード"
+        merchant = f"{service_name}{sheets_client.FLASH_REPORT_MARK}・店名は後日）"
+    else:
+        merchant = parser.extract_merchant_name(body, extracted.match_index, subject)
+    if extracted.note:
+        merchant = f"{merchant}（{extracted.note}）"
+
+    amount = extracted.amount
+    if parser.is_refund(subject, body):
+        amount = -abs(amount)
+        merchant = f"{merchant}（返金）"
+
+    category = parser.categorize(merchant)
+    if category == config.DEFAULT_CATEGORY and not is_flash_report:
+        category = parser.ai_categorize(merchant)
+    raw_date = datetime.fromtimestamp(date_ms / 1000)
+    effective_date = get_effective_date(raw_date, body)
+    return effective_date, merchant, amount, category
+
+
 BATCH_SIZE = 20
 
 
@@ -145,10 +190,19 @@ def _process_messages(service, sender_configs, pending_rows, pending_ids, flush)
     """メールを1件ずつ読み、記録を pending_rows にためる（BATCH_SIZE件たまるごとに flush で書き込む）。
     金額を読み取れたメールの件数を返す。"""
     matched_count = 0
+    # 1回の実行で読むメールの上限（サービス版で runner.py が指定する）。残りは目印が付かないまま
+    # 残るので、次の実行で続きから読まれる。上限に達したら、次のメールを取りに行かずに終える
+    # （取りに行くと、読む前に目印が付いてしまうため）
+    max_messages = int(os.environ.get("MAX_MESSAGES_PER_RUN", "0") or 0)
+    read_count = 0
     message_iter = fetch_unprocessed_messages(service, sender_configs)
     while True:
+        if max_messages and read_count >= max_messages:
+            print(f"1回に読むメールの上限（{max_messages}件）に達したので、続きは次回の実行で読みます")
+            break
         try:
             msg = next(message_iter)
+            read_count += 1
         except StopIteration:
             break
         except Exception as e:
@@ -157,44 +211,15 @@ def _process_messages(service, sender_configs, pending_rows, pending_ids, flush)
             break
 
         try:
-            sender_config = find_sender_config(msg["from"], sender_configs)
-            amount_keyword = sender_config.get("amount_keyword") if sender_config else None
-
-            # 「読み取る件名」が決まっている送信元は、件名にその言葉を含むメールだけを読む
-            # （Gmailの検索でも絞っているが、念のためここでも確かめる。宣伝メールを記録しないため）
-            includes = (sender_config or {}).get("include_subject_keywords") or []
-            if includes and not any(kw in msg["subject"] for kw in includes):
+            parsed = parse_card_email(msg["subject"], msg["from"], msg["body"], msg["date_ms"], sender_configs)
+            if parsed == SKIP_SUBJECT:
                 continue
-
-            extracted = parser.extract_amount_from_message(msg["body"], amount_keyword)
-            if not extracted:
+            if parsed is None:
                 print(f"金額を抽出できませんでした: {msg['subject']}")
                 continue
 
             matched_count += 1
-
-            is_flash_report = "速報" in msg["subject"]
-            if is_flash_report:
-                # 楽天カードの「速報版」には店名が無い。後日、店名入りの通知が届いたら、
-                # sheets_client.reconcile_flash_reports() がこの行を消して1件にまとめる
-                service_name = (sender_config or {}).get("name") or "カード"
-                merchant = f"{service_name}{sheets_client.FLASH_REPORT_MARK}・店名は後日）"
-            else:
-                merchant = parser.extract_merchant_name(msg["body"], extracted.match_index, msg["subject"])
-            if extracted.note:
-                merchant = f"{merchant}（{extracted.note}）"
-
-            amount = extracted.amount
-            if parser.is_refund(msg["subject"], msg["body"]):
-                amount = -abs(amount)
-                merchant = f"{merchant}（返金）"
-
-            category = parser.categorize(merchant)
-            if category == config.DEFAULT_CATEGORY and not is_flash_report:
-                category = parser.ai_categorize(merchant)
-            raw_date = datetime.fromtimestamp(msg["date_ms"] / 1000)
-            effective_date = get_effective_date(raw_date, msg["body"])
-
+            effective_date, merchant, amount, category = parsed
             pending_rows.append((effective_date, merchant, amount, category))
             pending_ids.append(msg["id"])
             if len(pending_rows) >= BATCH_SIZE:

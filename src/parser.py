@@ -192,7 +192,8 @@ _LABEL_LINE_PATTERN = re.compile(r"利用日|利用取引|お支払い|利用金
 # 「■利用先：ABCストア」「ご利用店名: ABCストア」のように、店名に見出しが付いている行
 # （三井住友カードの「◇利用先：」は、これまでの記録と店名の形を揃えるため対象外にしている）
 _MERCHANT_LABEL_PATTERN = re.compile(r"^[■●・\s]*(?:ご)?利用(?:先|店|店名|店舗|店舗名)\s*[：:]\s*(\S.*)$", re.MULTILINE)
-_USAGE_DATE_TABLE_PATTERN = re.compile(r"ご?利用日[\s\S]{0,60}?(\d{4})[/／](\d{1,2})[/／](\d{1,2})")
+# 「2026/09/28」のほか、「2026年9月28日」の書き方にも対応する
+_USAGE_DATE_TABLE_PATTERN = re.compile(r"ご?利用日[\s\S]{0,60}?(\d{4})\s*[/／年]\s*(\d{1,2})\s*[/／月]\s*(\d{1,2})")
 
 
 def _is_category_only_line(line: str) -> bool:
@@ -246,8 +247,71 @@ def _clean_merchant_line(line: str) -> str:
     return _strip_trailing_amount_fragment(_strip_trailing_category_tag(line))
 
 
+# 「ご利用先」だけの行（HTMLの表が文字に変換され、見出しと値が別々の行になったもの）
+_MERCHANT_HEADER_ONLY_PATTERN = re.compile(r"^[■●・\s]*(?:ご)?利用(?:先|店|店名|店舗|店舗名)\s*[：:]?\s*$")
+_DATE_ONLY_LINE_PATTERN = re.compile(
+    r"^\d{4}\s*[/／年]\s*\d{1,2}\s*[/／月]\s*\d{1,2}\s*日?(?:\s*[（(][^）)]{1,3}[）)])?(?:\s*\d{1,2}:\d{2}(?::\d{2})?)?$"
+)
+
+
+def _is_table_header_line(line: str) -> bool:
+    """「ご利用日」「ご利用先」「支払方法」のような、表の見出しだけの行かどうか。"""
+    line = line.strip(" ■●・：:")
+    return bool(_TABLE_HEADER_PATTERN.match(line))
+
+
+_TABLE_HEADER_PATTERN = re.compile(
+    r"^(?:(?:ご|お)?(?:利用|支払い?|引落し?)[^\d\s]{0,5}|(?:支払|お支払)?(?:方法|回数|区分)|カード名義人?|カード名称?)$"
+)
+
+
+def _looks_like_merchant(line: str) -> bool:
+    return bool(line) and not (
+        _DATE_ONLY_LINE_PATTERN.match(line)
+        or _is_amount_only_line(line)
+        or _is_table_header_line(line)
+        or _is_decorative_bullet_line(line)
+    )
+
+
+def _merchant_from_table(body: str) -> str | None:
+    """見出しと値が別々の行に分かれた表から、「ご利用先」の値を読み取る。
+    ・縦の表（「ご利用先」の次の行が値）
+    ・横の表（「ご利用日／ご利用先／…」の見出しが並び、その後に同じ順で値が並ぶ）
+    の両方に対応する。読み取れなければ None。"""
+    lines = [l.strip() for l in body.split("\n") if l.strip()]
+    for i, line in enumerate(lines):
+        if not _MERCHANT_HEADER_ONLY_PATTERN.match(line):
+            continue
+        start = i
+        while start > 0 and _is_table_header_line(lines[start - 1]):
+            start -= 1
+        end = i
+        while end + 1 < len(lines) and _is_table_header_line(lines[end + 1]):
+            end += 1
+        if end == start:
+            candidate = lines[i + 1] if i + 1 < len(lines) else ""   # 縦の表
+        else:
+            values = lines[end + 1:end + 1 + (end - start + 1)]   # 横の表
+            candidate = values[i - start] if len(values) == end - start + 1 else ""
+        if _looks_like_merchant(candidate):
+            return _clean_merchant_line(candidate)
+    return None
+
+
 def extract_merchant_name(body: str, match_index: int, subject: str) -> str:
-    """金額の位置から逆算して店舗名・商品名を推定する（GASのextractMerchantNameを移植）。"""
+    """金額の位置から逆算して店舗名・商品名を推定する（GASのextractMerchantNameを移植）。
+    推定した結果が、日付だけ・見出しだけ・件名そのもの、のような明らかに店名でないものだったら、
+    表の形（楽天カードのHTMLメールなど）として読み直す。"""
+    merchant = _extract_merchant_name_basic(body, match_index, subject)
+    if merchant == subject or not _looks_like_merchant(merchant):
+        from_table = _merchant_from_table(body)
+        if from_table:
+            return from_table
+    return merchant
+
+
+def _extract_merchant_name_basic(body: str, match_index: int, subject: str) -> str:
     labeled = _MERCHANT_LABEL_PATTERN.search(body)
     if labeled:
         return _clean_merchant_line(labeled.group(1))

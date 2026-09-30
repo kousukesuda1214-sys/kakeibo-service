@@ -30,7 +30,11 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 USER_TIMEOUT_SEC = 15 * 60   # 1人あたりの処理時間の上限
-FIRST_IMPORT_DAYS = 31       # 連携した日から何日前までのメールを取り込むか
+FIRST_IMPORT_DAYS = 31       # 最初に連携した日から何日前までのメールを取り込むか
+MAX_IMPORT_DAYS = 400        # どんなに前から使っていても、取り込むのはこの日数まで
+# 1回の実行で読むメールの上限。連携し直しで何か月分も取り込み直すときに時間切れにならないよう、
+# 残りは次の実行（30分後）に回す（新しいメールから順に読む）
+MAX_MESSAGES_PER_RUN = 300
 RUNNER_ONLY_ENV = ("RELAY_URL", "RUNNER_KEY")  # 利用者ごとの処理には渡さない値
 
 
@@ -48,12 +52,19 @@ def relay(action: str, **params) -> dict:
     return data
 
 
-def _process_after(connected_at: str | None) -> str:
+def _process_after(import_from: str | None, now: datetime | None = None) -> str:
+    """これより前のメールは読まない日付（yyyy/mm/dd）。
+    中継役の import_from は「最初に連携した日」なので、連携を解除していた間のメールも拾える
+    （処理済みの目印が付いたメールは読まないので、二重には記録されない）。"""
+    now = now or datetime.now(timezone.utc)
     try:
-        connected = datetime.fromisoformat(str(connected_at).replace("Z", "+00:00"))
+        start = datetime.fromisoformat(str(import_from).replace("Z", "+00:00"))
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
     except ValueError:
-        connected = datetime.now(timezone.utc)
-    return (connected - timedelta(days=FIRST_IMPORT_DAYS)).strftime("%Y/%m/%d")
+        start = now
+    start = min(start, now) - timedelta(days=FIRST_IMPORT_DAYS)
+    return max(start, now - timedelta(days=MAX_IMPORT_DAYS)).strftime("%Y/%m/%d")
 
 
 def run_user(label: str, user: dict) -> bool:
@@ -63,7 +74,8 @@ def run_user(label: str, user: dict) -> bool:
         "GOOGLE_SHEET_ID": user["sheet_id"],
         "LINE_USER_ID": user["user_id"],
         "SHEET_READY": "1" if user.get("sheet_ready") else "0",
-        "PROCESS_AFTER": _process_after(user.get("connected_at")),
+        "PROCESS_AFTER": _process_after(user.get("import_from") or user.get("connected_at")),
+        "MAX_MESSAGES_PER_RUN": str(MAX_MESSAGES_PER_RUN),
         "KAKEIBO_SERVICE_MODE": "1",
         "TZ": "Asia/Tokyo",  # 初期値。本人の「設定」シートにタイムゾーンがあれば、実行中にそちらへ切り替わる
     })

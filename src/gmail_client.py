@@ -191,7 +191,7 @@ def _get_or_create_label_id(service, label_name: str | None = None) -> str:
     return created["id"]
 
 
-def _build_query(sender_configs: list[dict] | None = None) -> str:
+def _build_query(sender_configs: list[dict] | None = None, processed: bool = False) -> str:
     """送信元リストからGmail検索クエリを組み立てる（GASのbuildSenderQueryに相当）。
     sender_configsを渡さない場合はconfig.SENDER_LIST（ハードコードのデフォルト）を使う。
     「送信元リスト」シートを見て組み立てたい場合は、呼び出し側で
@@ -211,7 +211,9 @@ def _build_query(sender_configs: list[dict] | None = None) -> str:
             part = f"({part} {exclude_str})"
         parts.append(part)
     sender_query = " OR ".join(parts)
-    return f"({sender_query}) -label:{PROCESSED_LABEL_NAME}{_process_after_filter()}"
+    # processed=True のときは、逆に「処理済み」の目印が付いたメールを探す（取り込み直しの準備に使う）
+    label_filter = f"label:{PROCESSED_LABEL_NAME}" if processed else f"-label:{PROCESSED_LABEL_NAME}"
+    return f"({sender_query}) {label_filter}{_process_after_filter()}"
 
 
 def _html_to_text(html: str) -> str:
@@ -300,6 +302,26 @@ def fetch_unprocessed_messages(service, sender_configs: list[dict] | None = None
         page_token = resp.get("nextPageToken")
         if not page_token:
             break
+
+
+def find_processed_message_ids(service, sender_configs: list[dict] | None = None) -> list[str]:
+    """取り込む範囲（PROCESS_AFTER以降）で、すでに「処理済み」の目印が付いているカード利用メールのIDを返す。
+    以前の家計簿で処理したメールを、新しい家計簿に取り込み直すときに使う。
+    目印の名前が見つからない（＝一度も処理したことがない）ときは、空のリストを返す。"""
+    labels = _call_with_retry(service.users().labels().list(userId="me").execute).get("labels", [])
+    if not any(label["name"] == PROCESSED_LABEL_NAME for label in labels):
+        return []
+    query = _build_query(sender_configs, processed=True)
+    ids: list[str] = []
+    page_token = None
+    while True:
+        resp = _call_with_retry(
+            service.users().messages().list(userId="me", q=query, pageToken=page_token, maxResults=500).execute
+        )
+        ids.extend(m["id"] for m in resp.get("messages", []))
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            return ids
 
 
 def remove_processed_label(service, message_ids: list[str]) -> None:
