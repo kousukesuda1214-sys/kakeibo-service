@@ -1,22 +1,28 @@
 # 家計簿サービス 引き継ぎ書（HANDOFF）
 
-最終更新：2026/09/30（2回目のチャット：Google Cloud のURL向け直しまで完了。再連携の問題・Node 24対応・プライバシーポリシー・楽天カードの表形式などを対応）
+最終更新：2026/10/04（2回目のチャット：9/29〜10/4。再連携の問題・Node 24対応・プライバシーポリシー・楽天の表形式・Google CloudのURL向け直し・専用版の回数制限と無料枠・**GitHubの定期実行が飛ばされる問題（GASから30分おきに起動）**）
 
-このファイルは、**新しいチャットのClaudeが、このプロジェクトの経緯と今の状態を一度で把握するため**のもの。
-コードはすべてGitHubの公開リポジトリにあるので、**晃介さんにコードの貼り付けを求めず**、自分で読みに行くこと
-（bash の curl で `raw.githubusercontent.com` / `api.github.com` が使える。web_fetch はユーザーのメッセージに書かれたURLのみ）。
+このファイルは、**新しいチャットのClaude（claude.ai でも Claude Code でも）が、このプロジェクトの経緯と今の状態を一度で把握するため**のもの。
+コードはすべてGitHubにあるので、**晃介さんにコードの貼り付けを求めず**、自分で読みに行くこと。
+- **claude.ai のチャット**：bash の curl で `raw.githubusercontent.com` が使える。`api.github.com` は共有IPですぐ回数制限に当たるので、
+  `git clone https://github.com/kousukesuda1214-sys/<リポジトリ>.git` で読む。非公開の `kakeibo-python` は読めない。push もできない（zipで渡す）
+- **Claude Code（2026/10/04 に晃介さんのMacへ導入。Claude Desktop の Code タブ）**：`~/python/kakeibo-service`・`~/python/kakeibo`（専用版）を直接読み書きでき、
+  晃介さんの `git`・`gh` のログインで commit・push・Actions の確認までできる。**push は全員に即反映されるので、必ず内容を見せて許可をもらってから**
 
 ---
 
 ## 0. 次のチャットのClaudeへ（最初にやること）
 
 1. このファイルを最後まで読む
-2. ファイル一覧を取る：
-   `curl -s "https://api.github.com/repos/kousukesuda1214-sys/kakeibo-service/git/trees/main?recursive=1" | python3 -c "import json,sys;[print(t['path']) for t in json.load(sys.stdin)['tree']]"`
-3. 必要なファイルを読む：`curl -s https://raw.githubusercontent.com/kousukesuda1214-sys/kakeibo-service/main/<パス>`
-   （キャッシュで古い版が返ることがある。最新のコミットを使うなら `.../kakeibo-service/<コミットID>/<パス>`）
-4. **前回のチャットの変更が反映済みか確認する**：`git log` に「連携し直しで前の家計簿を使い続ける」のコミットがあるか、
-   `gas/relay/Code.gs` と script.google.com の中継役が同じか（`getPast_` という関数があるか）を晃介さんに確認してもらう
+2. コードを読む：
+   - Claude Code：そのまま `~/python/kakeibo-service` を読む。まず `git status`・`git log --oneline -5` で未push の変更が無いか確認
+   - claude.ai：`git clone https://github.com/kousukesuda1214-sys/kakeibo-service.git` して読む
+     （`raw.githubusercontent.com` はキャッシュで古い版が返ることがある。`api.github.com` はすぐ回数制限に当たる）
+4. **前回のチャットの変更が反映済みか確認する**：
+   - `git log` に「30分おきの起動は中継役から・定期実行は2時間おきの予備に」のコミットがあるか（10/04 時点で**未push の可能性あり**。
+     中身は `.github/workflows/run.yml` の cron を `17 */2 * * *` に、`gas/relay/Code.gs` に `kickRunner`・`setupKickTrigger` を追加）
+   - script.google.com の中継役に `kickRunner` があり、⏰トリガーに `kickRunner`（30分おき）が1つあるか
+   - 両方のリポジトリの Actions に「Manually run」（workflow_dispatch）が30分おきに並んでいるか
 5. 晃介さんに「どこから再開するか」を、「6. 残っている作業」から確認する
 
 ---
@@ -46,7 +52,8 @@
       ▼ リンク                             │
 [連携ページ kakeibo-auth（GitHub Pages）] ─Googleの許可コード─▶ 中継役が鍵に交換・本人のドライブに家計簿を作成
                                                                  └▶ GitHub API で親玉をすぐ実行（2〜3分で準備完了）
-[親玉 kakeibo-service（GitHub Actions・30分おき）]
+[親玉 kakeibo-service（GitHub Actions）] ◀─30分おきに手動実行として起動─ 中継役の時間主導トリガー（kickRunner）
+   （GitHubの定期実行 schedule は混雑時に飛ばされ数時間あくため。schedule は2時間おきの予備として残す）
    src/runner.py：中継役から「利用者一覧＋1時間だけ使える鍵」を受け取り、1人ずつ別プロセスで src/user_run.py を実行
    src/user_run.py：初回はシート作成 → src/main.py（Gmail読み取り→記録→決算）→ 見た目・並び順 → 最新の数字（スナップショット）
    runner.py はスナップショットを中継役に預ける（LINEのボタンで即答するため）
@@ -79,7 +86,8 @@
 | 連携ページ | GitHub `kakeibo-auth`（公開・GitHub Pages）`https://kousukesuda1214-sys.github.io/kakeibo-auth/` ／ローカル `~/python/kakeibo-auth` | push で1〜2分で反映 |
 | リッチメニュー画像 | `kakeibo-auth/richmenu.png`（作成コード：`tools/richmenu/draw.py`） | 画像をpush → GASで `setupRichMenu` を実行 |
 | GAS版からの引っ越しコード | `gas/migrate/migrate.gs` | 利用者が自分のGAS版の家計簿の Apps Script に貼って `migrateToNewKakeibo` を実行 |
-| 晃介さん専用版 | GitHub `kakeibo-python`（非公開）／ローカル `~/python/kakeibo` | 今回のサービスとは別。触るときは要確認 |
+| 晃介さん専用版 | GitHub `kakeibo-python`（非公開）／ローカル `~/python/kakeibo`。ワークフロー `daily.yml` | 今回のサービスとは別。触るときは要確認。push で反映 |
+| 専用版の起動役（GAS） | script.google.com「家計簿 専用版 起動役」（単独のプロジェクト）。控え：`gas/kick-python/kick.gs` | 30分おきに `kakeibo-python` の `daily.yml` を手動実行として起動。スクリプト プロパティ `GITHUB_TOKEN` |
 | 旧・雛形 | GitHub `kakeibo-template`（公開・Template repository） | 使っていない（2026/09/30 にブランディングのURLを kakeibo-service へ向け直したので、もう参照されていない） |
 | プライバシーポリシー | `docs/PRIVACY.md`（READMEから要約とリンク。Google Cloud のブランディングもここを指す） | push で反映 |
 | 秘密の値の作り直し手順 | `docs/SECRETS_ROTATION.md` | 家族以外に広げる前に1回やる |
@@ -91,14 +99,17 @@
 - OAuthクライアント：`kakeibo-web`（ウェブ。リダイレクトURI `https://kousukesuda1214-sys.github.io/kakeibo-auth/`）← 現在使用中。`kakeibo-shared-client`（デスクトップ）は旧雛形用
 
 ### LINE
-- 日次決算Bot（@681ufyix、チャネルID 2010855284、無料のコミュニケーションプラン＝**月200通を全員で共有**。返信は無料・pushだけが数えられる）
+- 日次決算Bot（@681ufyix、チャネルID 2010855284、無料のコミュニケーションプラン＝**月200通を全員で共有**。返信は無料・pushだけが数えられる。
+  **専用版も同じBot・同じ枠**。9月は専用版だけで上限に達した。月の区切りは日本時間。10/04 時点の今月の使用は2通。確認：
+  `T=$(grep '^LINE_CHANNEL_ACCESS_TOKEN=' ~/python/kakeibo/.env | cut -d= -f2- | tr -d "\"' "); curl -s -H "Authorization: Bearer $T" https://api.line.me/v2/bot/message/quota/consumption; unset T`）
 - Webhook URL＝中継役のウェブアプリURL（`kakeibo-auth/index.html` の `RELAY_URL` にも書いてある）
 - 応答メッセージ・あいさつメッセージ：オフ（あいさつは中継役の「ようこそ」カードが担当）。「チャット」もオフ推奨（「担当者が返信します」表示を消すため）
 - リッチメニューは Messaging API で登録（OA Managerで作ったメニューより優先される。**OA Managerでは変えない**）
 
 ### 秘密の値（名前だけ。値はここに書かない）
 - GitHub Secrets（kakeibo-service）：`RELAY_URL`・`RUNNER_KEY`・`LINE_CHANNEL_ACCESS_TOKEN`・`ANTHROPIC_API_KEY`
-- GASスクリプトプロパティ：`LINE_CHANNEL_ACCESS_TOKEN`・`GOOGLE_CLIENT_ID`・`GOOGLE_CLIENT_SECRET`・`RUNNER_KEY`・`GITHUB_TOKEN`（fine-grained、kakeibo-serviceの Actions: Read and write のみ、期限なし）
+- GASスクリプトプロパティ（中継役）：`LINE_CHANNEL_ACCESS_TOKEN`・`GOOGLE_CLIENT_ID`・`GOOGLE_CLIENT_SECRET`・`RUNNER_KEY`・`GITHUB_TOKEN`（fine-grained、kakeibo-serviceの Actions: Read and write のみ、期限なし）
+- GASスクリプトプロパティ（専用版の起動役）：`GITHUB_TOKEN`（fine-grained「kakeibo-python 起動役」、kakeibo-python の Actions: Read and write のみ、期限なし。2026/10/04 作成）
   ＋自動保存：`user:<LINE userId>`（鍵・メール・sheet_id・sheet_ready・connected_at・first_connected_at）・`state:<uuid>`（連携リンク・1時間）・`snap:<userId>`（最新の数字）・`past:<メールのSHA-256>`（解除した人の家計簿の控え・400日）
 - LINEトークン・ANTHROPIC_API_KEY の元は `~/python/kakeibo/.env`。**LINEのトークンは再発行しない**（晃介さん専用版が止まる）
 
@@ -111,6 +122,7 @@
 - リッチメニュー6ボタン：今日の決算／家計簿を開く／設定／今月のカテゴリ別／使い方／連携・解除（すべてFlexのカードで返信）
 - 「設定」はスプレッドシートの「設定」シートをその場で読む。日次決算の曜日・週次決算の曜日（月〜日のトグル＋毎日/平日/週末）、日次決算の時刻、高額アラート金額は **LINEから変更でき、シートに書き込む**（設定の正はシートだけ）
 - 連携解除は確認ダイアログ付き。ブロック／解除で鍵削除＋Googleの許可取り消し（シートは残る）。偽の退会イベントはLINEのプロフィールAPIで確認
+- 中継役の時間主導トリガー `kickRunner` が30分おきに親玉を手動実行として起動（初回のみエディタで `setupKickTrigger` を実行。失敗するとGoogleからエラーのメール）
 - 連携完了時に GitHub API で親玉をすぐ実行（連携し直しで前の家計簿を使い続ける場合も、解除中のメールを拾うためすぐ実行）
 - 同じGoogleアカウントで連携し直すと前の家計簿の続きから使える（上の「連携解除 → 連携し直し」）
 
@@ -140,6 +152,10 @@
 - 既存の利用者のシートは、値を消さずに自動で新しい形にそろえる（行の差し込み・説明文・版数・並び順）。ただし「予算計画」の2段見出しのような**形そのものの作り替えは新しい家計簿だけ**
 - 連携を解除した人の「どの家計簿を使っていたか」の控えは、メールアドレスをSHA-256に変換して400日残す（プライバシーポリシーに明記。すぐ消したい人は運営者に連絡）
 - 秘密の値の作り直しは、家族以外に広げる前にまとめて行う（`docs/SECRETS_ROTATION.md`）
+- **GitHub の定期実行（schedule）には頼らない**：2026/10 に、30分おきの設定なのに3〜6時間おきにしか動かない状態を確認（両リポジトリとも）。
+  日次決算は「送信時刻から2時間以内に実行されたときだけ送る」ので、間引かれると届かない日が出る（専用版で 10/2・10/3 に発生）。
+  → 起動は GAS の時間主導トリガーから workflow_dispatch（飛ばされない）。schedule は予備（サービス版2時間おき・専用版6時間おき）
+- Claude の契約はお父様の名義（Pro）のまま使う（晃介さんが判断。規約上アカウントの共有は認められていない点は伝えた）
 - 晃介さん専用版はサービス版に移らない（15分おき・お父様への支払日通知などがあるため）。GitHub Actionsの無料枠を9月分で使い切り、**10月1日のリセットまで待つ**ことにした（止まっていた分は再開後にまとめて記録される）
 
 ---
@@ -164,9 +180,19 @@
 - [ ] 家族にQRから友だち追加してもらい、「ようこそ」→連携→2〜3分で準備、の流れを実機で確認
 - [ ] 家族以外に広げる前に、LINEトークン・Googleのクライアントシークレットを作り直す（手順：`docs/SECRETS_ROTATION.md`）
 
-**Claudeが読めないため保留**
-- [ ] `notify.py` の同一エラー1日1回の間引きを、晃介さん専用版 `kakeibo-python` にも移植（非公開リポジトリなので curl で読めない。
-      専用版はActionsの無料枠のため10月1日まで止まっている。再開後に、晃介さんが一時的に読めるようにする／該当ファイルをzipで渡してもらう等を相談）
+**10/04 の起動の変更（確認待ち）**
+- [ ] サービス版：zip `kakeibo-service-update-20261004.zip`（`run.yml` の cron を `17 */2 * * *`・`gas/relay/Code.gs` に `kickRunner`）の **push が済んでいるか**（10/04 夕方の時点で GitHub は `d4efd57` のままだった）
+- [ ] サービス版：中継役に貼り替え・新バージョン・`setupKickTrigger` 実行（晃介さんは「一応できた」）。⏰トリガーと Actions の「Manually run」で確認
+- [ ] 専用版：起動役の `setup` は実行済み（ログ「✅ 30分おきの起動を設定し、試しに1回起動しました」）。Actions に「Manually run」が30分おきに並ぶか確認
+- [ ] 専用版：10/04 夜の日次決算が届くか（届けば起動の変更は成功）
+
+**専用版（kakeibo-python）の記録**（Claude Code からは直接読める）
+- 2026/10/01 の Sheets の回数制限（429）→ `fix_quota.py`（サービス版で 9/25 に入れた「429で65秒待つ」「スプレッドシートを1回の実行で1回だけ開く」と同じもの）を適用・push 済み（`008aaec`）
+- 毎月20日ごろ Actions が止まっていた原因：15分おきで月2,880回以上（非公開リポジトリの無料枠は月2,000分、1回最低1分）。
+  10/01 に30分おき＋Node 24（`740007e`）→ 10/04 に schedule を `23 */6 * * *`（予備）に（`0cb2a88`）、起動は GAS の起動役から30分おき。
+  1回20〜27秒なので、月 約1,440＋120回 ≒ 1,560分で枠内。60秒を超えるようになったら見直す
+- 10/01 には Billing で止められていたが、10/02 以降は成功している
+- [ ] `notify.py` の同一エラー1日1回の間引きを専用版にも移植（**Claude Code なら専用版を直接読めるので、もうできる**）
 
 **利用者が増えたら**
 - [ ] LINE有料プラン、状態で出し分けるリッチメニュー（連携前は2ボタン）、「お父様への支払日通知」のような追加の送り先
@@ -176,6 +202,7 @@
 ## 7. 晃介さんとのやりとりの約束ごと（とても大事）
 
 - **日本語・やさしい言葉**で、手順は番号付き・1ステップずつ。専門用語には一言説明
+- **引き継ぎ書（このファイル）は、晃介さんが「引き継ぎ書を出して」と言ったときだけ作って見せる**（毎回出すとややこしいため。内容は覚えておき、出すときにまとめて反映）
 - ファイルは**zipでまとめて渡し**、反映は次の形のコマンドで（ダウンロードフォルダの同名ファイルの取り違えを防ぐ）：
   ```bash
   cd ~/python/kakeibo-service
@@ -193,4 +220,6 @@
 - VS Codeで新規ファイルを作って貼る方式は、ファイル名・場所がずれやすかった（「Annual summary」「parser . py」など）。**ダウンロード＋コマンドで入れる**
 - 変更は**Claude側で模擬環境のテストをしてから**渡す（GASはNodeでモック、Pythonは偽のスプレッドシート・偽のGmail）。pushやデプロイは全員に即反映されるため
 - GitHub API（api.github.com）は共有のIPで回数制限（1時間60回）にすぐ当たる。当たったら `git clone https://github.com/kousukesuda1214-sys/<リポジトリ>.git` で読む（github.com は使える）
+- 晃介さんがコマンドを実行した結果はスクショで届く。**「できた」と言われても、スクショの出力（`main -> main` が出ているか、`nothing to commit` や `no matches found` が無いか）を必ず確認する**
+  （10/04 に、zip をダウンロードしていないまま進めて何も反映されていなかったことがあった）
 - zshのプロンプトに複数行を貼ると、途中で切れて `for>` や `dquote>` で止まることがある → `control + C` で戻る。長いコマンドは1行にまとめる

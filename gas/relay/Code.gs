@@ -475,12 +475,35 @@ function triggerRunner_() {
       payload: JSON.stringify({ ref: "main" }),
       muteHttpExceptions: true,
     });
-    if (res.getResponseCode() === 204) return true;
+    if (res.getResponseCode() === 204 || res.getResponseCode() === 200) return true;
     console.error("親玉の呼び出しに失敗: " + res.getResponseCode());
   } catch (err) {
     console.error("親玉の呼び出しに失敗: " + err);
   }
   return false;
+}
+
+// ============================================================
+// 30分おきに親玉を起動する
+// GitHub の定期実行（schedule）は混雑時に飛ばされ、数時間あくことがある（2026/10 に確認）。
+// 手動実行（workflow_dispatch）は飛ばされないので、ここから30分おきに呼ぶ。
+// GitHub側の定期実行は、こちらが止まったときの予備として残す。
+// 最初に1回だけ setupKickTrigger をエディタから実行する。
+// ============================================================
+
+/** 時間主導トリガーから30分おきに呼ばれる。失敗したら Google からエラーのメールが届く。 */
+function kickRunner() {
+  if (!triggerRunner_()) throw new Error("親玉の起動に失敗しました（スクリプト プロパティの GITHUB_TOKEN を確認）");
+  console.log("親玉を起動しました");
+}
+
+function setupKickTrigger() {
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === "kickRunner")
+    .forEach((t) => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger("kickRunner").timeBased().everyMinutes(30).create();
+  kickRunner();
+  console.log("✅ 30分おきに親玉を起動するよう設定し、試しに1回起動しました");
 }
 
 function refreshAccessToken_(userId, user) {
