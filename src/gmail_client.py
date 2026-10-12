@@ -207,9 +207,11 @@ def _build_query(sender_configs: list[dict] | None = None, processed: bool = Fal
             part += " (" + " OR ".join(f'subject:"{kw}"' for kw in includes) + ")"
         excludes = sender.get("exclude_subject_keywords") or []
         if excludes:
-            exclude_str = " ".join(f'-subject:({kw})' for kw in excludes)
-            part = f"({part} {exclude_str})"
-        parts.append(part)
+            part += " " + " ".join(f'-subject:({kw})' for kw in excludes)
+        # 送信元ごとに必ずカッコで囲む。Gmailの検索では OR が「並べただけ（かつ）」より先に結び付くため、
+        # 囲まないと件名の絞り込みが他の送信元にまでかかる（2026/10 に、楽天の「カード利用のお知らせ」の
+        # 絞り込みで三井住友カードのメールが1通も読まれなくなっていた）
+        parts.append(f"({part})")
     sender_query = " OR ".join(parts)
     # processed=True のときは、逆に「処理済み」の目印が付いたメールを探す（取り込み直しの準備に使う）
     label_filter = f"label:{PROCESSED_LABEL_NAME}" if processed else f"-label:{PROCESSED_LABEL_NAME}"
