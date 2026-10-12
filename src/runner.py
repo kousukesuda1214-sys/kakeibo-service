@@ -111,6 +111,12 @@ def run_user(label: str, user: dict) -> bool:
     traces = [l.split("|", 1)[1] for l in lines if l.startswith("KAKEIBO_TRACE|")]
     elapsed = time.time() - started
 
+    # カード会社から届いたのに読まれていないメール（検索の条件の不具合など）。数だけを出す。
+    # 実行は「失敗」にしない（30分おきに失敗メールが届き続けないように）。毎朝の見回り
+    # （kakeibo-python の watch_runs.py）がこの「取りこぼしの疑い」の行を見つけて、運営者にメールで知らせる
+    for warn in (l.split("|") for l in lines if l.startswith("KAKEIBO_WARN|missed|")):
+        print(f"{label}：⚠️ 取りこぼしの疑い（読まれていないカードのメール {warn[2]}通）")
+
     if proc.returncode == 0 and not errors:
         print(f"{label}：✅ 成功（{elapsed:.0f}秒）")
         return True

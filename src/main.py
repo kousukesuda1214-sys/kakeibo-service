@@ -47,7 +47,7 @@ from . import (
     review_comment,
     unclassified_report,
 )
-from .gmail_client import get_gmail_service, fetch_unprocessed_messages, remove_processed_label
+from .gmail_client import get_gmail_service, fetch_unprocessed_messages, remove_processed_label, count_missed_messages
 from .settings import apply_sheet_settings
 
 # この時刻以降に受信した（本文に利用日時の記載が無い）通知は、翌日の取引として扱う。
@@ -136,7 +136,23 @@ def process_new_emails() -> int:
             except Exception as label_error:
                 notify.notify_error("process_new_emails（処理済みの目印を外す）", label_error)
 
+    if not _reached_message_limit:
+        _check_missed_messages(service, sender_configs)
     return matched_count
+
+
+def _check_missed_messages(service, sender_configs) -> None:
+    """読み落としているカード利用メールが無いか確かめ、あれば数だけを表示する（中身は出さない）。
+    サービス版では runner.py がこの目印の行を拾って実行記録に出し、毎朝の見回り（kakeibo-python の
+    watch_runs.py）が運営者にメールで知らせる。確かめること自体に失敗しても、家計簿の処理は止めない。"""
+    try:
+        missed = count_missed_messages(service, sender_configs)
+    except Exception as e:
+        print(f"取りこぼしの確認に失敗しました（家計簿の処理には影響しません）: {type(e).__name__}")
+        return
+    if missed:
+        print(f"⚠️ 取りこぼしの疑い：カード会社から届いたメール{missed}通が、読まれないまま残っています")
+        print(f"KAKEIBO_WARN|missed|{missed}")
 
 
 SKIP_SUBJECT = "skip_subject"
@@ -184,11 +200,13 @@ def parse_card_email(subject: str, from_header: str, body: str, date_ms: int, se
 
 
 BATCH_SIZE = 20
+_reached_message_limit = False  # 今回の実行で、1回に読むメールの上限に達したか
 
 
 def _process_messages(service, sender_configs, pending_rows, pending_ids, flush) -> int:
     """メールを1件ずつ読み、記録を pending_rows にためる（BATCH_SIZE件たまるごとに flush で書き込む）。
     金額を読み取れたメールの件数を返す。"""
+    global _reached_message_limit
     matched_count = 0
     # 1回の実行で読むメールの上限（サービス版で runner.py が指定する）。残りは目印が付かないまま
     # 残るので、次の実行で続きから読まれる。上限に達したら、次のメールを取りに行かずに終える
@@ -199,6 +217,7 @@ def _process_messages(service, sender_configs, pending_rows, pending_ids, flush)
     while True:
         if max_messages and read_count >= max_messages:
             print(f"1回に読むメールの上限（{max_messages}件）に達したので、続きは次回の実行で読みます")
+            _reached_message_limit = True  # 残りは次回に読むのが正常なので、取りこぼしの確認はしない
             break
         try:
             msg = next(message_iter)

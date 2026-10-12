@@ -191,6 +191,19 @@ def _get_or_create_label_id(service, label_name: str | None = None) -> str:
     return created["id"]
 
 
+def _sender_query_part(sender: dict) -> str:
+    """送信元1つ分の検索条件（送信元アドレス＋件名の絞り込み・除外）。"""
+    part = f'from:({sender["address"]})'
+    includes = sender.get("include_subject_keywords") or []
+    if includes:
+        # 件名に、どれか1つの言葉を含むものだけ（宣伝メールなどを読まないように）
+        part += " (" + " OR ".join(f'subject:"{kw}"' for kw in includes) + ")"
+    excludes = sender.get("exclude_subject_keywords") or []
+    if excludes:
+        part += " " + " ".join(f'-subject:({kw})' for kw in excludes)
+    return part
+
+
 def _build_query(sender_configs: list[dict] | None = None, processed: bool = False) -> str:
     """送信元リストからGmail検索クエリを組み立てる（GASのbuildSenderQueryに相当）。
     sender_configsを渡さない場合はconfig.SENDER_LIST（ハードコードのデフォルト）を使う。
@@ -198,21 +211,10 @@ def _build_query(sender_configs: list[dict] | None = None, processed: bool = Fal
     sheets_client.get_sender_configs() の結果を渡すこと（このモジュール自身は
     sheets_client.pyに依存させたくないため、ここでは読み込まない）。"""
     configs = sender_configs if sender_configs is not None else config.SENDER_LIST
-    parts = []
-    for sender in configs:
-        part = f'from:({sender["address"]})'
-        includes = sender.get("include_subject_keywords") or []
-        if includes:
-            # 件名に、どれか1つの言葉を含むものだけ（宣伝メールなどを読まないように）
-            part += " (" + " OR ".join(f'subject:"{kw}"' for kw in includes) + ")"
-        excludes = sender.get("exclude_subject_keywords") or []
-        if excludes:
-            part += " " + " ".join(f'-subject:({kw})' for kw in excludes)
-        # 送信元ごとに必ずカッコで囲む。Gmailの検索では OR が「並べただけ（かつ）」より先に結び付くため、
-        # 囲まないと件名の絞り込みが他の送信元にまでかかる（2026/10 に、楽天の「カード利用のお知らせ」の
-        # 絞り込みで三井住友カードのメールが1通も読まれなくなっていた）
-        parts.append(f"({part})")
-    sender_query = " OR ".join(parts)
+    # 送信元ごとに必ずカッコで囲む。Gmailの検索では OR が「並べただけ（かつ）」より先に結び付くため、
+    # 囲まないと件名の絞り込みが他の送信元にまでかかる（2026/10 に、楽天の「カード利用のお知らせ」の
+    # 絞り込みで三井住友カードのメールが1通も読まれなくなっていた）
+    sender_query = " OR ".join(f"({_sender_query_part(sender)})" for sender in configs)
     # processed=True のときは、逆に「処理済み」の目印が付いたメールを探す（取り込み直しの準備に使う）
     label_filter = f"label:{PROCESSED_LABEL_NAME}" if processed else f"-label:{PROCESSED_LABEL_NAME}"
     return f"({sender_query}) {label_filter}{_process_after_filter()}"
@@ -304,6 +306,44 @@ def fetch_unprocessed_messages(service, sender_configs: list[dict] | None = None
         page_token = resp.get("nextPageToken")
         if not page_token:
             break
+
+
+MISSED_CHECK_DAYS = 3        # 取りこぼしを調べる範囲（直近の何日に届いたメールか）
+MISSED_MIN_AGE_HOURS = 2     # 届いてから何時間たっても目印が無ければ、取りこぼしとみなすか
+
+
+def count_missed_messages(service, sender_configs: list[dict] | None = None, now_ms: int | None = None) -> int:
+    """
+    送信元リストのカード会社から直近に届いたのに、何時間たっても「処理済み」の目印が付いていないメールの数を返す。
+    fetch_unprocessed_messages() は読んだメールにすぐ目印を付ける（読めなかったメールにも付ける）ので、
+    目印の無いメールが残っているのは、検索の条件の不具合などで読み落としているということ。
+    全部の送信元をまとめた検索（_build_query）とは別に、送信元ごとに1つずつ検索して確かめる
+    （2026/10 に、まとめた検索の書き方の不具合で、三井住友カードのメールを2週間読み落としていた）。
+    """
+    configs = sender_configs if sender_configs is not None else config.SENDER_LIST
+    now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+    oldest_ms = now_ms - MISSED_CHECK_DAYS * 24 * 3600 * 1000
+    newest_ms = now_ms - MISSED_MIN_AGE_HOURS * 3600 * 1000
+    # Gmailの after: は日付単位なので、1日前から探して、届いた時刻で絞り直す
+    after = time.strftime("%Y/%m/%d", time.localtime(oldest_ms / 1000 - 24 * 3600))
+    missed = 0
+    for sender in configs:
+        query = f"({_sender_query_part(sender)}) -label:{PROCESSED_LABEL_NAME} after:{after}{_process_after_filter()}"
+        page_token = None
+        while True:
+            resp = _call_with_retry(
+                service.users().messages().list(userId="me", q=query, pageToken=page_token).execute
+            )
+            for msg_meta in resp.get("messages", []):
+                msg = _call_with_retry(
+                    service.users().messages().get(userId="me", id=msg_meta["id"], format="minimal").execute
+                )
+                if oldest_ms <= int(msg["internalDate"]) <= newest_ms:
+                    missed += 1
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+    return missed
 
 
 def find_processed_message_ids(service, sender_configs: list[dict] | None = None) -> list[str]:
