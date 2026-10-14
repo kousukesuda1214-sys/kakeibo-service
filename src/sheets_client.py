@@ -1116,12 +1116,35 @@ def sort_detail_and_log() -> None:
     detail_sheet = ss.worksheet(config.SHEET_DETAIL)
     detail_last_row = len(_call_with_retry(detail_sheet.get_all_values))
     if detail_last_row > 2:
+        _fix_text_dates(detail_sheet, detail_last_row)
         _call_with_retry(detail_sheet.sort, (2, "des"), range=f"A3:E{detail_last_row}")
 
     log_sheet = ss.worksheet(config.SHEET_LOG)
     log_last_row = len(_call_with_retry(log_sheet.get_all_values))
     if log_last_row > 2:
+        _fix_text_dates(log_sheet, log_last_row)
         _call_with_retry(log_sheet.sort, (2, "des"), range=f"A3:C{log_last_row}")
+
+
+_TEXT_DATE_PATTERN = re.compile(r"^\d{4}/\d{1,2}/\d{1,2}( \d{1,2}:\d{2}(:\d{2})?)?$")
+
+
+def _fix_text_dates(sheet, last_row: int) -> None:
+    """B列（日時）で、日付ではなく文字として入っているものを、本物の日付に直す。
+    文字の日時は、新しい順に並べ替えると日付より上に来てしまい、一番上に居座る
+    （2026/10 に、GAS版から引っ越した人の取引明細で、2024〜2026年の10行が先頭に残っていた）。
+    直すところが無ければ、何も書き込まない。"""
+    values = _call_with_retry(
+        sheet.get, f"B3:B{last_row}", value_render_option="UNFORMATTED_VALUE"
+    )
+    updates = []
+    for offset, row in enumerate(values):
+        value = row[0] if row else ""
+        # 本物の日付は数値として返ってくる。文字のまま返ってきた日時だけを書き直す
+        if isinstance(value, str) and _TEXT_DATE_PATTERN.match(value.strip()):
+            updates.append({"range": f"B{3 + offset}", "values": [[value.strip()]]})
+    if updates:
+        _call_with_retry(sheet.batch_update, updates, value_input_option="USER_ENTERED")
 
 
 def _border_request(sheet, start_row: int, end_row: int, start_col: int, end_col: int) -> dict | None:
