@@ -1129,22 +1129,41 @@ def sort_detail_and_log() -> None:
 _TEXT_DATE_PATTERN = re.compile(r"^\d{4}/\d{1,2}/\d{1,2}( \d{1,2}:\d{2}(:\d{2})?)?$")
 
 
+_SHEETS_EPOCH = datetime(1899, 12, 30)  # スプレッドシートの日付の数（シリアル値）の0日目
+
+
 def _fix_text_dates(sheet, last_row: int) -> None:
     """B列（日時）で、日付ではなく文字として入っているものを、本物の日付に直す。
     文字の日時は、新しい順に並べ替えると日付より上に来てしまい、一番上に居座る
     （2026/10 に、GAS版から引っ越した人の取引明細で、2024〜2026年の10行が先頭に残っていた）。
-    直すところが無ければ、何も書き込まない。"""
+    文字のまま「日付として読んで」と書き直しても（USER_ENTERED）、そのセルでは文字のまま残ったため、
+    日付の数（シリアル値）そのものと、表示の形を書き込む。直すところが無ければ、何も書き込まない。"""
     values = _call_with_retry(
         sheet.get, f"B3:B{last_row}", value_render_option="UNFORMATTED_VALUE"
     )
-    updates = []
+    requests = []
     for offset, row in enumerate(values):
         value = row[0] if row else ""
         # 本物の日付は数値として返ってくる。文字のまま返ってきた日時だけを書き直す
-        if isinstance(value, str) and _TEXT_DATE_PATTERN.match(value.strip()):
-            updates.append({"range": f"B{3 + offset}", "values": [[value.strip()]]})
-    if updates:
-        _call_with_retry(sheet.batch_update, updates, value_input_option="USER_ENTERED")
+        if not (isinstance(value, str) and _TEXT_DATE_PATTERN.match(value.strip())):
+            continue
+        text = value.strip()
+        parsed = datetime.strptime(text, "%Y/%m/%d %H:%M:%S" if text.count(":") == 2
+                                   else "%Y/%m/%d %H:%M" if ":" in text else "%Y/%m/%d")
+        row_index = 2 + offset  # 0始まり（3行目＝2）
+        requests.append({
+            "updateCells": {
+                "range": {"sheetId": sheet.id, "startRowIndex": row_index, "endRowIndex": row_index + 1,
+                          "startColumnIndex": 1, "endColumnIndex": 2},
+                "rows": [{"values": [{
+                    "userEnteredValue": {"numberValue": (parsed - _SHEETS_EPOCH).total_seconds() / 86400},
+                    "userEnteredFormat": {"numberFormat": {"type": "DATE_TIME", "pattern": "yyyy/mm/dd h:mm:ss"}},
+                }]}],
+                "fields": "userEnteredValue,userEnteredFormat.numberFormat",
+            }
+        })
+    if requests:
+        _call_with_retry(sheet.spreadsheet.batch_update, {"requests": requests})
 
 
 def _border_request(sheet, start_row: int, end_row: int, start_col: int, end_col: int) -> dict | None:
