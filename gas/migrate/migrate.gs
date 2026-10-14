@@ -195,6 +195,39 @@ function mergeBudget_(oldSs, newSs) {
 // カテゴリ予算・送信元リスト（見出しの下の表を、そのまま置き換える）
 // ============================================================
 
+// 新しい家計簿にだけある列（GAS版には無かった列）。同じ位置の列から写すことはしない（空欄のまま。初期値はサービス側が入れる）
+const NEW_ONLY_HEADERS_ = ["読み取る件名"];
+
+/**
+ * 新しい家計簿の列ごとに、GAS版のどの列から写すかを決める（写さない列は -1）。
+ *  1. 見出しがまったく同じ列
+ *  2. かっこの中の説明と空白を除いた見出しが同じ列（「除外キーワード」と「除外キーワード（件名、カンマ区切り・任意）」など）
+ *  3. それでも無ければ、同じ位置の列。ただし、GAS版のその位置に見出しがあり、まだどこにも使われていないときだけ
+ *     （以前は見出しが無い列も同じ位置から写していたため、GAS版のF列の説明文やメモが、新しい家計簿の
+ *      「読み取る件名」に入ってしまうおそれがあった）
+ */
+function mapColumns_(oldHeaders, newHeaders) {
+  const norm = (h) => String(h).replace(/[（(].*$/, "").replace(/\s/g, "");
+  const used = {};
+  const colMap = newHeaders.map((h) => {
+    if (!h) return -1;
+    let i = oldHeaders.indexOf(h);
+    if (i === -1) i = oldHeaders.findIndex((o, j) => o && !used[j] && norm(o) === norm(h));
+    if (i !== -1) used[i] = true;
+    return i;
+  });
+  return colMap.map((i, c) => {
+    const h = newHeaders[c];
+    if (i !== -1 || !h) return i;
+    if (NEW_ONLY_HEADERS_.some((k) => h.indexOf(k) === 0)) return -1;
+    if (oldHeaders[c] && !used[c]) {
+      used[c] = true;
+      return c;
+    }
+    return -1;
+  });
+}
+
 function replaceTable_(oldSs, newSs, name) {
   const oldSheet = oldSs.getSheetByName(name), newSheet = newSs.getSheetByName(name);
   if (!oldSheet) return "この家計簿に「" + name + "」シートが無いため、飛ばしました";
@@ -209,16 +242,16 @@ function replaceTable_(oldSs, newSs, name) {
   const oh = headerRow(oldValues), nh = headerRow(newValues);
   if (oh < 0 || nh < 0) return "見出しが見つからないため、飛ばしました";
 
-  // 見出しの文字が同じ列どうしを対応させる（無ければ、同じ位置の列）
   const newHeaders = newValues[nh].map((v) => String(v).trim());
   const oldHeaders = oldValues[oh].map((v) => String(v).trim());
-  const colMap = newHeaders.map((h, c) => (h ? (oldHeaders.indexOf(h) !== -1 ? oldHeaders.indexOf(h) : c) : -1));
+  const colMap = mapColumns_(oldHeaders, newHeaders);
+  if (colMap.every((c) => c === -1)) return "対応する列が見つからないため、飛ばしました";
   const firstCol = colMap.findIndex((c) => c !== -1);
   const lastCol = colMap.length - 1 - colMap.slice().reverse().findIndex((c) => c !== -1);
 
   const rows = oldValues.slice(oh + 1)
-    .filter((r) => r.some((v) => String(v).trim()))
-    .map((r) => colMap.slice(firstCol, lastCol + 1).map((c) => (c === -1 ? "" : r[c])));
+    .map((r) => colMap.slice(firstCol, lastCol + 1).map((c) => (c === -1 ? "" : r[c])))
+    .filter((r) => r.some((v) => String(v).trim())); // 写さない列（説明文など）にしか中身が無い行は、写さない
 
   const start = nh + 2;
   const lastData = Math.max(newSheet.getLastRow(), start);
