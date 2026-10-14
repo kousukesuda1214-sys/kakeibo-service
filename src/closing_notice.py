@@ -53,10 +53,8 @@ def _closing_period_for_payment(payment_date: datetime) -> dict:
 
 
 def _parse_detail_date(raw) -> datetime | None:
-    try:
-        return datetime.strptime(str(raw), "%Y/%m/%d %H:%M:%S")
-    except (ValueError, TypeError):
-        return None
+    # 「取引明細」の日時は「2026/10/14 07:00」の形で表示する（秒なし）ので、どちらの形も読める共通の読み方を使う
+    return sheets_client._parse_detail_date(str(raw))
 
 
 def _summarize_period(period_start: datetime, period_end: datetime) -> tuple[int, int]:

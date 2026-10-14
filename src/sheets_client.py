@@ -262,7 +262,7 @@ def get_parsed_detail_rows() -> list[dict]:
 
 def get_monthly_budget(target_date: datetime) -> dict | None:
     """「予算計画」シートから、指定した年月（B列「yyyy年M月」）の行を探す。
-    見つかれば {row, budget}（C列＝計画）、無ければNone。"""
+    見つかれば {row, budget（C列＝計画）, actual（E列＝今の実績。空欄ならNone）}、無ければNone。"""
     sheet = _spreadsheet().worksheet(config.SHEET_BUDGET)
     records = _call_with_retry(sheet.get_all_values)
     for i, row in enumerate(records):
@@ -274,7 +274,8 @@ def get_monthly_budget(target_date: datetime) -> dict | None:
         y, m = int(match.group(1)), int(match.group(2))
         if y == target_date.year and m == target_date.month:
             budget = _parse_yen(row[2]) if len(row) > 2 else 0  # C列
-            return {"row": i + 1, "budget": budget}
+            actual = _parse_yen(row[4]) if len(row) > 4 and str(row[4]).strip() else None  # E列
+            return {"row": i + 1, "budget": budget, "actual": actual}
     return None
 
 
@@ -1086,6 +1087,15 @@ def bulk_append_transactions(rows: list[tuple]) -> None:
     if sheet.row_count < end_row:
         _call_with_retry(sheet.add_rows, end_row - sheet.row_count)
     _call_with_retry(sheet.update, f"A{start_row}", values, value_input_option="USER_ENTERED")
+    # 足した行の日時も、ほかの行と同じ見やすい形にそろえる（シートの最後に足した行には、列の書式が付いていないことがある）
+    _call_with_retry(sheet.spreadsheet.batch_update, {"requests": [{
+        "repeatCell": {
+            "range": {"sheetId": sheet.id, "startRowIndex": start_row - 1, "endRowIndex": end_row,
+                      "startColumnIndex": 1, "endColumnIndex": 2},
+            "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE_TIME", "pattern": _DETAIL_DATE_FORMAT}}},
+            "fields": "userEnteredFormat.numberFormat",
+        }
+    }]})
 
 
 def bulk_write_log(date_totals: dict) -> None:
@@ -1117,6 +1127,7 @@ def sort_detail_and_log() -> None:
     detail_last_row = len(_call_with_retry(detail_sheet.get_all_values))
     if detail_last_row > 2:
         _fix_text_dates(detail_sheet, detail_last_row)
+        _fix_merchant_labels(detail_sheet, detail_last_row)
         _call_with_retry(detail_sheet.sort, (2, "des"), range=f"A3:E{detail_last_row}")
 
     log_sheet = ss.worksheet(config.SHEET_LOG)
@@ -1129,7 +1140,27 @@ def sort_detail_and_log() -> None:
 _TEXT_DATE_PATTERN = re.compile(r"^\d{4}/\d{1,2}/\d{1,2}( \d{1,2}:\d{2}(:\d{2})?)?$")
 
 
+# 店名の頭に残った見出し（「◇利用先：Visa加盟店」の「◇利用先：」）。parser.py の _MERCHANT_LABEL_PATTERN と同じ記号
+_MERCHANT_LABEL_PREFIX = re.compile(r"^[■●・◇◆□▼▽★☆※\s]*(?:ご)?利用(?:先|店|店名|店舗|店舗名)\s*[：:]\s*(?=\S)")
+
+
+def _fix_merchant_labels(sheet, last_row: int) -> None:
+    """C列（店舗名）の頭に「◇利用先：」のような見出しが付いたままの行から、見出しを取り除く
+    （2026/10 まで、三井住友カードの「◇利用先：」の◇を読み飛ばせず、見出しごと店名にしていた）。
+    直すところが無ければ、何も書き込まない。"""
+    values = _call_with_retry(sheet.get, f"C3:C{last_row}")
+    updates = []
+    for offset, row in enumerate(values):
+        merchant = str(row[0]) if row else ""
+        cleaned = _MERCHANT_LABEL_PREFIX.sub("", merchant)
+        if cleaned != merchant:
+            updates.append({"range": f"C{3 + offset}", "values": [[cleaned]]})
+    if updates:
+        _call_with_retry(sheet.batch_update, updates, value_input_option="RAW")
+
+
 _SHEETS_EPOCH = datetime(1899, 12, 30)  # スプレッドシートの日付の数（シリアル値）の0日目
+_DETAIL_DATE_FORMAT = "yyyy/mm/dd hh:mm"  # 「取引明細」の日時の表示（sheet_style.py と同じ）
 
 
 def _fix_text_dates(sheet, last_row: int) -> None:
@@ -1157,7 +1188,7 @@ def _fix_text_dates(sheet, last_row: int) -> None:
                           "startColumnIndex": 1, "endColumnIndex": 2},
                 "rows": [{"values": [{
                     "userEnteredValue": {"numberValue": (parsed - _SHEETS_EPOCH).total_seconds() / 86400},
-                    "userEnteredFormat": {"numberFormat": {"type": "DATE_TIME", "pattern": "yyyy/mm/dd h:mm:ss"}},
+                    "userEnteredFormat": {"numberFormat": {"type": "DATE_TIME", "pattern": _DETAIL_DATE_FORMAT}},
                 }]}],
                 "fields": "userEnteredValue,userEnteredFormat.numberFormat",
             }
@@ -1313,7 +1344,7 @@ def _upgrade_sender_list(sheet, records: list) -> list:
     - F列「読み取る件名」の見出しが無ければ足す（以前の形のシート）
     - 見本の行（B列が「（例）」）が、初期設定のカード会社（楽天カード）そのものなら本物の行に書き換える。
       そうでなければ、見本の行の横の説明文を消す（F列を「読み取る件名」として使うため）
-    - 初期設定と同じアドレスの行で「読み取る件名」が空欄なら、初期設定の言葉を入れる
+    - 初期設定と同じアドレスの行で「読み取る件名」「除外キーワード」が空欄なら、初期設定の言葉を入れる
       （GAS版から引っ越した人の楽天カードの行など。空欄のままだと宣伝メールまで読んでしまう）。
       引っ越しはF列の見出しができた後に行われるので、これは毎回確かめる
     - 以前の形のシートだったときだけ、初期設定のカード会社でまだ入っていないものを足す（1回だけ）
@@ -1343,6 +1374,10 @@ def _upgrade_sender_list(sheet, records: list) -> list:
             existing.add(address)
         if d and d.get("include_subject_keywords") and not (len(row) > 5 and str(row[5]).strip()):
             updates.append({"range": f"F{i}", "values": [[",".join(d["include_subject_keywords"])]]})
+        # 除外キーワードも同じ。空欄のままだと、三井住友カードの「ご利用確認のお願い」（利用通知と同じ利用の
+        # 確認メール）まで記録して、同じ利用が2回入る（2026/10 に、GAS版から引っ越した人の家計簿で起きていた）
+        if d and d.get("exclude_subject_keywords") and not (len(row) > 3 and str(row[3]).strip()):
+            updates.append({"range": f"D{i}", "values": [[",".join(d["exclude_subject_keywords"])]]})
 
     if old_format:
         missing = [d for d in config.SENDER_LIST if d["address"].lower() not in existing]

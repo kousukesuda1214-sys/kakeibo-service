@@ -174,6 +174,29 @@ def build_report(today: datetime, previous: str | None = None):
     return message
 
 
+def refresh_budget_actuals(now: datetime | None = None) -> bool:
+    """「予算計画」の今の月の実績（E列）と差額（G列）を、「ログ」の今の数字に合わせる。
+    日次決算を送るときにも更新しているが、日次決算を毎日送らない設定だと、送る日まで古いまま残っていた
+    （2026/10 に、日曜だけ送る設定の人の実績が数日前のままだった）。
+    その月の行が無い・数字が変わっていないときは、何も書き込まない。書き込んだら True を返す。"""
+    now = now or datetime.now()
+    period = get_current_closing_period_info(now)
+    budget_info = sheets_client.get_monthly_budget(period["payment_month_date"])
+    if not budget_info:
+        return False
+    period_total = 0
+    for row in sheets_client.get_log_records():
+        if len(row) < 3:
+            continue
+        row_date = _parse_date(row[1])
+        if row_date and period["period_start"] <= row_date <= now:
+            period_total += _to_int(row[2])
+    if budget_info.get("actual") == period_total:
+        return False
+    sheets_client.update_budget_actuals(budget_info["row"], period_total, budget_info["budget"] - period_total)
+    return True
+
+
 def maybe_send_daily_report(now: datetime | None = None) -> bool:
     """送信時間帯に、その日まだ送っていなければ日次決算をLINEに送る。"""
     now = now or datetime.now()

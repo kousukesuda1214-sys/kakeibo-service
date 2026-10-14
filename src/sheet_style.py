@@ -12,7 +12,8 @@
 
 from . import config, sheets_client
 
-LAYOUT_VERSION = 2  # 2：「送信元リスト」にF列（読み取る件名）を足した
+LAYOUT_VERSION = 3  # 2：「送信元リスト」にF列（読み取る件名）を足した
+                    # 3：「取引明細」の日時を「2026/10/14 07:00」の形に（秒を出さず、時を2桁にそろえる）
 
 # シート（タブ）の並び順。毎日見るものを左に、たまにしか触らない設定系を右にしている
 # （晃介さん専用版の並び順に、サービス版で増えた「カテゴリルール」「設定」を加えたもの）。
@@ -59,7 +60,7 @@ LAYOUTS = {
     },
     config.SHEET_DETAIL: {
         "widths": [30, 150, 440, 100, 160], "freeze": 2, "headers": ["B2:E2"],
-        "numbers": {"D": YEN_SIGNED}, "data_from": 3,
+        "numbers": {"D": YEN_SIGNED}, "dates": {"B": sheets_client._DETAIL_DATE_FORMAT}, "data_from": 3,
     },
     config.SHEET_LOG: {
         "widths": [30, 120, 110], "freeze": 2, "headers": ["B2:C2"],
@@ -142,6 +143,20 @@ def _requests_for(ws, layout: dict) -> list[dict]:
                     "startColumnIndex": _col_index(letter), "endColumnIndex": _col_index(letter) + 1,
                 },
                 "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": pattern}}},
+                "fields": "userEnteredFormat.numberFormat",
+            }
+        })
+
+    # 日時の列：見やすい形（列全体のデータ部分に設定するので、あとから増えた行にも効く）
+    # 秒は出さない。プログラムは「2026/10/14 07:00」の形も読めるようにしてある（sheets_client._parse_detail_date）
+    for letter, pattern in layout.get("dates", {}).items():
+        requests.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id, "startRowIndex": data_row_index,
+                    "startColumnIndex": _col_index(letter), "endColumnIndex": _col_index(letter) + 1,
+                },
+                "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE_TIME", "pattern": pattern}}},
                 "fields": "userEnteredFormat.numberFormat",
             }
         })

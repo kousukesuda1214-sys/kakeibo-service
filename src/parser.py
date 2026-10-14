@@ -191,7 +191,8 @@ _LABEL_LINE_PATTERN = re.compile(r"利用日|利用取引|お支払い|利用金
 
 # 「■利用先：ABCストア」「ご利用店名: ABCストア」のように、店名に見出しが付いている行
 # （三井住友カードの「◇利用先：」は、これまでの記録と店名の形を揃えるため対象外にしている）
-_MERCHANT_LABEL_PATTERN = re.compile(r"^[■●・\s]*(?:ご)?利用(?:先|店|店名|店舗|店舗名)\s*[：:]\s*(\S.*)$", re.MULTILINE)
+# 行頭の飾り記号（■●・のほか、三井住友カードの「◇利用先：Visa加盟店」の◇など）は読み飛ばす
+_MERCHANT_LABEL_PATTERN = re.compile(r"^[■●・◇◆□▼▽★☆※\s]*(?:ご)?利用(?:先|店|店名|店舗|店舗名)\s*[：:]\s*(\S.*)$", re.MULTILINE)
 # 「2026/09/28」のほか、「2026年9月28日」の書き方にも対応する
 _USAGE_DATE_TABLE_PATTERN = re.compile(r"ご?利用日[\s\S]{0,60}?(\d{4})\s*[/／年]\s*(\d{1,2})\s*[/／月]\s*(\d{1,2})")
 
@@ -248,7 +249,7 @@ def _clean_merchant_line(line: str) -> str:
 
 
 # 「ご利用先」だけの行（HTMLの表が文字に変換され、見出しと値が別々の行になったもの）
-_MERCHANT_HEADER_ONLY_PATTERN = re.compile(r"^[■●・\s]*(?:ご)?利用(?:先|店|店名|店舗|店舗名)\s*[：:]?\s*$")
+_MERCHANT_HEADER_ONLY_PATTERN = re.compile(r"^[■●・◇◆□▼▽★☆※\s]*(?:ご)?利用(?:先|店|店名|店舗|店舗名)\s*[：:]?\s*$")
 _DATE_ONLY_LINE_PATTERN = re.compile(
     r"^\d{4}\s*[/／年]\s*\d{1,2}\s*[/／月]\s*\d{1,2}\s*日?(?:\s*[（(][^）)]{1,3}[）)])?(?:\s*\d{1,2}:\d{2}(?::\d{2})?)?$"
 )

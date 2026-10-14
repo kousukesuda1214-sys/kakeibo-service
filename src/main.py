@@ -326,6 +326,11 @@ def run() -> None:
     # ④日次・週次決算
     daily_report.maybe_send_daily_report()
     weekly_report.maybe_send_weekly_report()
+    # 「予算計画」の実績は、日次決算を送らない日も毎回新しくする（日次決算を週1回にしている人の実績が古いまま残らないように）
+    try:
+        daily_report.refresh_budget_actuals()
+    except Exception as e:
+        notify.notify_error("refresh_budget_actuals", e)
 
     # ⑤締め日の月次振り返りコメント、月末のサブスク棚卸し・ヘルスチェック、年末の年間サマリー
     review_comment.maybe_send_review_comment()
