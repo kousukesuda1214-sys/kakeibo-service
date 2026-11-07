@@ -299,6 +299,11 @@ def run() -> None:
     if flash_count > 0:
         print(f"速報版と店名入りの通知の二重記録を{flash_count}件、まとめました（対象日: {', '.join(flash_dates)}）")
 
+    # ①-2c Google Playの同じ支払いが、カード通知と領収メールで二重に記録されていたら、領収メールの行を残して1件にまとめる
+    play_count, play_dates = sheets_client.reconcile_google_play_duplicates()
+    if play_count > 0:
+        print(f"Google Playの二重記録を{play_count}件、まとめました（対象日: {', '.join(play_dates)}）")
+
     # ①-3 同じ日時・同じ店舗が、為替レートの違いだけで金額違いの別行になっている
     # ものも整理する（全期間再構築を日をまたいで複数回行った際に起きる）
     same_moment_count, same_moment_dates = sheets_client.cleanup_same_moment_duplicates()

@@ -809,6 +809,67 @@ def reconcile_flash_reports() -> tuple[int, list[str]]:
     return len(rows_to_delete), sorted(affected_dates)
 
 
+# Google Playの領収メールから記録した行の目印（「￥290/月」「（開発元: Google LLC）」など）
+_GOOGLE_PLAY_RECEIPT_MARKS = ("/月", "/年", "開発元")
+_GOOGLE_PLAY_CARD_NAME = "GOOGLE PLAY APP"
+_GOOGLE_PLAY_MAX_GAP = timedelta(days=2)
+
+
+def _find_google_play_duplicates(records: list) -> list[tuple[int, int]]:
+    """
+    カード通知の「GOOGLE PLAY APP」の行と、同じ支払いの領収メールの行の組を、(カード通知の行番号, 領収メールの行番号)
+    の一覧で返す。同じ金額で、日時の差が2日以内のものを、1行ずつ組にする（領収メールの行は、日付が1日ずれて記録されることがある）。
+    """
+    cards, receipts = [], []
+    for i, row in enumerate(records):
+        if i < 2 or len(row) < 4:
+            continue
+        date = _parse_detail_date(row[1])
+        try:
+            amount = _parse_yen(row[3])
+        except ValueError:
+            continue
+        if not date or amount <= 0:
+            continue
+        name = unicodedata.normalize("NFKC", row[2]).upper()
+        if _GOOGLE_PLAY_CARD_NAME in name:
+            cards.append((date, amount, i + 1))
+        elif any(mark in name for mark in _GOOGLE_PLAY_RECEIPT_MARKS):
+            receipts.append((date, amount, i + 1))
+
+    pairs, used = [], set()
+    for date, amount, row_number in sorted(cards):
+        candidates = [
+            (abs(r_date - date), r_row) for r_date, r_amount, r_row in receipts
+            if r_amount == amount and r_row not in used and abs(r_date - date) <= _GOOGLE_PLAY_MAX_GAP
+        ]
+        if candidates:
+            receipt_row = min(candidates)[1]
+            used.add(receipt_row)
+            pairs.append((row_number, receipt_row))
+    return pairs
+
+
+def reconcile_google_play_duplicates() -> tuple[int, list[str]]:
+    """
+    同じGoogle Playの支払いが、カード通知（店名は「GOOGLE PLAY APP」）と領収メール（アプリ名あり）で
+    二重に記録されている場合に、アプリ名の分かる領収メールの行を残して1件にまとめる。
+    領収メールが無い支払いもあるので、カード通知を読まないようにはせず、組が見つかったものだけを消す。
+    @return (削除した件数, 影響を受けた日付のリスト)
+    """
+    sheet = _spreadsheet().worksheet(config.SHEET_DETAIL)
+    records = _call_with_retry(sheet.get_all_values)
+    pairs = _find_google_play_duplicates(records)
+    if not pairs:
+        return 0, []
+    rows_to_delete = [card_row for card_row, _ in pairs]
+    affected_dates = {records[row - 1][1].split(" ")[0] for row in rows_to_delete}
+    for row_number in sorted(rows_to_delete, reverse=True):
+        _call_with_retry(sheet.delete_rows, row_number)
+    _recalculate_log_totals_for_dates(sorted(affected_dates))
+    return len(rows_to_delete), sorted(affected_dates)
+
+
 def cleanup_same_moment_duplicates() -> tuple[int, list[str]]:
     """
     「取引明細」の中から、日時（分・秒まで完全一致）・店舗の核名（為替メモや記号を
